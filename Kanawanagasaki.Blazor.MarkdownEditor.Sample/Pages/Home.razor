@@ -1,0 +1,13 @@
+﻿@page "/"
+
+<PageTitle>Home</PageTitle>
+
+<MarkdownEditor @bind-Value=@_md />
+
+<div>
+    <pre><code>@_md</code></pre>
+</div>
+
+@code {
+    private string _md = string.Empty;
+}

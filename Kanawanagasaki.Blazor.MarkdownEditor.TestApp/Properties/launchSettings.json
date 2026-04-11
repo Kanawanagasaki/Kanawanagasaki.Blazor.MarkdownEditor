@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "Kanawanagasaki.Blazor.MarkdownEditor.TestApp": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:58323;http://localhost:58324"
+    }
+  }
+}

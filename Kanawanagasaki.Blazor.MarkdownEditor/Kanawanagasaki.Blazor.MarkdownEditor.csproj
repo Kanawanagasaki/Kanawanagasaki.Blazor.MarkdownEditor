@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PackageType>BlazorComponentLibrary</PackageType>
+    <Version>1.0.0</Version>
+    <Description>A WYSIWYG Markdown editor Blazor component using textarea + overlay architecture. Markdown is the source of truth; rendered HTML is displayed on top.</Description>
+    <RootNamespace>Kanawanagasaki.Blazor.MarkdownEditor</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <SupportedPlatform Include="browser" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.Web" Version="10.0.5" />
+  </ItemGroup>
+
+</Project>

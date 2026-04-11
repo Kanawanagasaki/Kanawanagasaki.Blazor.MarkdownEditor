@@ -1,0 +1,16 @@
+@page "/"
+
+<PageTitle>Markdown Editor Test</PageTitle>
+
+<h1>Markdown Editor Test</h1>
+
+<MarkdownEditor @bind-Value="markdown" Placeholder="Start typing..." />
+
+<div id="raw-value" data-testid="raw-value"
+     style="margin-top:20px; padding:10px; background:#f0f0f0; white-space:pre-wrap; border-radius:6px; font-family:monospace; font-size:13px;">
+    @markdown
+</div>
+
+@code {
+    private string markdown = "";
+}

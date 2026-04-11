@@ -1,0 +1,391 @@
+/* ═══════════════════════════════════════════════════════════════
+   Kanawanagasaki.Blazor.MarkdownEditor  –  scoped styles
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── root container ─────────────────────────────────────────── */
+
+.md-editor {
+    --md-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+    --md-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo,
+                    Courier, monospace;
+    --md-fs: 15px;
+    --md-lh: 1.6;
+    --md-py: 16px;
+    --md-px: 16px;
+    --md-radius: 6px;
+    --md-border: #d1d5db;
+    --md-bg: #ffffff;
+    --md-toolbar-bg: #f9fafb;
+    --md-toolbar-border: #e5e7eb;
+    --md-btn-hover: #e5e7eb;
+    --md-btn-active: #d1d5db;
+    --md-cursor-color: #1f2937;
+    --md-sel-bg: rgba(59, 130, 246, 0.25);
+
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--md-border);
+    border-radius: var(--md-radius);
+    background: var(--md-bg);
+    font-family: var(--md-font);
+    font-size: var(--md-fs);
+    line-height: var(--md-lh);
+    overflow: hidden;
+    width: 100%;
+    min-height: 300px;
+}
+
+/* ── toolbar ────────────────────────────────────────────────── */
+
+::deep .md-toolbar {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--md-toolbar-border);
+    background: var(--md-toolbar-bg);
+    padding: 4px 8px;
+    user-select: none;
+    position: relative;
+    z-index: 10;
+}
+
+::deep .md-toolbar-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+}
+
+::deep .md-sep {
+    width: 1px;
+    height: 24px;
+    background: var(--md-toolbar-border);
+    margin: 0 4px;
+    flex-shrink: 0;
+}
+
+::deep .md-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: #374151;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+    flex-shrink: 0;
+}
+
+::deep .md-btn:hover:not(:disabled) {
+    background: var(--md-btn-hover);
+}
+
+::deep .md-btn:active:not(:disabled) {
+    background: var(--md-btn-active);
+}
+
+::deep .md-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+::deep .md-btn:focus-visible {
+    outline: 2px solid #3b82f6;
+    outline-offset: 1px;
+}
+
+::deep .md-btn svg {
+    pointer-events: none;
+}
+
+::deep .md-btn-text {
+    width: auto;
+    padding: 0 8px;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+/* ── editor body (contains textarea + overlay + cursor) ────── */
+
+::deep .md-editor-body {
+    position: relative;
+    flex: 1 1 auto;
+    overflow: hidden;
+    min-height: 0;
+}
+
+/* ── textarea (invisible input + scroll model) ─────────────── */
+
+::deep .md-textarea {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: var(--md-py) var(--md-px);
+    border: none;
+    outline: none;
+    resize: none;
+    overflow: auto;
+
+    /* invisible but functional */
+    color: transparent;
+    caret-color: transparent;
+    background: transparent;
+    -webkit-text-fill-color: transparent;
+    pointer-events: none;
+
+    /* hidden scrollbar */
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+
+    /* must match overlay body-text metrics exactly */
+    font-family: var(--md-font);
+    font-size: var(--md-fs);
+    line-height: var(--md-lh);
+    letter-spacing: normal;
+    word-spacing: normal;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    tab-size: 2;
+}
+
+::deep .md-textarea::-webkit-scrollbar {
+    display: none;
+}
+
+/* selection highlight visible through transparent textarea */
+::deep .md-textarea::selection {
+    background-color: var(--md-sel-bg);
+    -webkit-text-fill-color: transparent;
+}
+
+/* ── overlay (visible rendered layer, captures clicks + wheel) ─ */
+
+::deep .md-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: var(--md-py) var(--md-px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    pointer-events: auto;
+    cursor: text;
+
+    /* same base metrics as textarea */
+    font-family: var(--md-font);
+    font-size: var(--md-fs);
+    line-height: var(--md-lh);
+    letter-spacing: normal;
+    word-spacing: normal;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    color: #1f2937;
+    tab-size: 2;
+
+    /* hidden scrollbar (textarea handles scrolling) */
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+::deep .md-overlay::-webkit-scrollbar {
+    display: none;
+}
+
+/* ── simulated cursor ───────────────────────────────────────── */
+
+::deep .md-cursor {
+    position: absolute;
+    z-index: 3;
+    width: 1px;
+    background-color: var(--md-cursor-color);
+    pointer-events: none;
+    display: none;
+    transition: none;
+}
+
+/* ── selection highlight layer ─────────────────────────────── */
+
+::deep .md-selection-layer {
+    position: absolute;
+    z-index: 2;
+    pointer-events: none;
+    inset: 0;
+    overflow: hidden;
+}
+
+::deep .md-sel-seg {
+    position: absolute;
+    background-color: var(--md-sel-bg);
+    border-radius: 2px;
+}
+
+/* ── block-level rendered elements ──────────────────────────── */
+
+::deep .md-line {
+    min-height: 1em;
+    position: relative;
+}
+
+::deep .md-empty {
+    min-height: 1em;
+}
+
+/* Code block fence placeholders — zero height, not clickable */
+::deep .md-fence {
+    height: 0;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0;
+    margin: 0;
+    pointer-events: none;
+}
+
+/* headings */
+::deep .md-h {
+    font-weight: 700;
+    line-height: 1.3;
+    margin: 0;
+}
+
+::deep .md-h1 { font-size: 2em; margin: 0.4em 0; }
+::deep .md-h2 { font-size: 1.5em; margin: 0.35em 0; }
+::deep .md-h3 { font-size: 1.25em; margin: 0.3em 0; }
+::deep .md-h4 { font-size: 1.1em; margin: 0.25em 0; }
+::deep .md-h5 { font-size: 1em; margin: 0.2em 0; }
+::deep .md-h6 { font-size: 0.9em; margin: 0.2em 0; color: #6b7280; }
+
+/* horizontal rule */
+::deep .md-hr {
+    border: none;
+    border-top: 2px solid #e5e7eb;
+    margin: 0;
+}
+
+::deep .md-hr-line {
+    display: flex;
+    align-items: center;
+    min-height: 1.2em;
+}
+
+/* blockquote */
+::deep .md-bq {
+    margin: 0;
+    padding-left: 12px;
+    border-left: 3px solid #d1d5db;
+    color: #4b5563;
+}
+
+::deep .md-bq-line {
+    display: flex;
+    align-items: baseline;
+}
+
+/* list items */
+::deep .md-li-line {
+    display: flex;
+    align-items: baseline;
+}
+
+::deep .md-li-marker {
+    flex-shrink: 0;
+    color: #374151;
+    user-select: none;
+}
+
+::deep .md-li-marker::before {
+    content: "\2022 ";  /* bullet • */
+}
+
+::deep .md-oli-marker {
+    flex-shrink: 0;
+    font-weight: 600;
+    color: #374151;
+    user-select: none;
+    min-width: 1.5em;
+}
+
+::deep .md-oli-marker::before {
+    content: attr(data-marker);
+}
+
+/* code blocks */
+::deep .md-codeblock {
+    margin: 0.5em 0;
+    padding: 12px;
+    background: #f3f4f6;
+    border-radius: 4px;
+    font-family: var(--md-font-mono);
+    font-size: 0.875em;
+    line-height: 1.5;
+    overflow-x: auto;
+    color: #1f2937;
+}
+
+::deep .md-code-line {
+    min-height: 1em;
+    white-space: pre;
+}
+
+/* inline code */
+::deep .md-inline-code {
+    padding: 2px 5px;
+    background: #f3f4f6;
+    border-radius: 3px;
+    font-family: var(--md-font-mono);
+    font-size: 0.875em;
+    color: #dc2626;
+}
+
+/* links */
+::deep .md-link {
+    color: #2563eb;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+::deep .md-link:hover {
+    color: #1d4ed8;
+}
+
+/* images */
+::deep .md-img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+    margin: 4px 0;
+    display: inline-block;
+}
+
+/* bold & italic */
+::deep .md-overlay strong {
+    font-weight: 700;
+}
+
+::deep .md-overlay em {
+    font-style: italic;
+}
+
+::deep .md-overlay del {
+    text-decoration: line-through;
+    color: #6b7280;
+}
+
+/* selection highlight (from renderer) */
+::deep .md-sel {
+    background-color: var(--md-sel-bg);
+    border-radius: 2px;
+    color: inherit;
+    padding: 1px 0;
+    margin: -1px 0;
+}

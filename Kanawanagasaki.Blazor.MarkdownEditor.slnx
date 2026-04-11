@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="Kanawanagasaki.Blazor.MarkdownEditor.PlaywrightTests/Kanawanagasaki.Blazor.MarkdownEditor.PlaywrightTests.csproj" />
+  <Project Path="Kanawanagasaki.Blazor.MarkdownEditor.Sample/Kanawanagasaki.Blazor.MarkdownEditor.Sample.csproj" />
+  <Project Path="Kanawanagasaki.Blazor.MarkdownEditor.TestApp/Kanawanagasaki.Blazor.MarkdownEditor.TestApp.csproj" />
+  <Project Path="Kanawanagasaki.Blazor.MarkdownEditor/Kanawanagasaki.Blazor.MarkdownEditor.csproj" />
+</Solution>

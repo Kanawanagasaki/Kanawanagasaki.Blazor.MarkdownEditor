@@ -579,4 +579,161 @@ public class EditorToolbarTests : EditorTestBase
         var rawAfterRedo = await GetRawValue();
         Assert.Contains("Hello", rawAfterRedo);
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Bold + Italic toggle: ***text*** combined pattern
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Regression test: toggling italic 10 times on bold+italic text
+    /// must NOT keep adding asterisks.  The sequence is:
+    ///   "One two three" → Bold "two" → Italic "two" × 10 toggles.
+    /// After an even number of italic toggles, the text should be back
+    /// to "One **two** three" (bold only, italic off).
+    /// </summary>
+    [Fact]
+    public async Task BoldPlusItalic_TenItalicToggles_ShouldNotAccumulateAsterisks()
+    {
+        await NavigateToEditor();
+        await FillContentAsync("One two three");
+        await FillContentAndWaitForMappings("One two three", 1);
+
+        // ── Select "two" via mouse drag on the overlay ──────────
+        // Find the bounding box of "two" in the rendered overlay
+        var twoBounds = await Page.EvaluateAsync<TextBoundsForSelection>(@"() => {
+            const overlay = document.querySelector('.md-overlay');
+            const walker = document.createTreeWalker(overlay, NodeFilter.SHOW_TEXT);
+            let node;
+            while ((node = walker.nextNode())) {
+                const idx = node.textContent.indexOf('two');
+                if (idx !== -1) {
+                    const range = document.createRange();
+                    range.setStart(node, idx);
+                    range.setEnd(node, idx + 3);
+                    const rect = range.getBoundingClientRect();
+                    return {
+                        x: rect.x, y: rect.y,
+                        width: rect.width, height: rect.height,
+                        right: rect.right, bottom: rect.bottom,
+                        centerX: rect.x + rect.width / 2,
+                        centerY: rect.y + rect.height / 2
+                    };
+                }
+            }
+            return null;
+        }");
+        Assert.NotNull(twoBounds);
+
+        // Mousedown at start of "two", drag to end of "two", mouseup
+        await Page.Mouse.MoveAsync((float)twoBounds.X, (float)twoBounds.CenterY);
+        await Page.Mouse.DownAsync();
+        await Page.Mouse.MoveAsync((float)twoBounds.Right, (float)twoBounds.CenterY);
+        await Page.Mouse.UpAsync();
+
+        // Wait for selection to be synced
+        await Page.WaitForFunctionAsync(
+            "() => { const ta = document.querySelector('.md-textarea'); return ta && ta.selectionStart !== ta.selectionEnd; }",
+            new PageWaitForFunctionOptions { Timeout = 5000 });
+
+        // ── Click Bold ──────────────────────────────────────────
+        await Page.Locator(".md-btn-bold").ClickAsync();
+        await WaitForOverlayUpdate();
+
+        var rawAfterBold = await GetRawValue();
+        Assert.Contains("**two**", rawAfterBold);
+
+        // ── Click Italic 10 times ───────────────────────────────
+        var italicBtn = Page.Locator(".md-btn-italic");
+        for (int i = 0; i < 10; i++)
+        {
+            await italicBtn.ClickAsync();
+            await WaitForOverlayUpdate();
+        }
+
+        // After 10 italic toggles (even number), italic should be OFF.
+        // Bold should still be ON.
+        var rawAfterToggles = await GetRawValue();
+        Assert.Contains("**two**", rawAfterToggles);
+
+        // Ensure we do NOT have accumulated asterisks like *** or ****
+        Assert.DoesNotContain("***two***", rawAfterToggles);
+        Assert.DoesNotContain("****two****", rawAfterToggles);
+        Assert.DoesNotContain("*****two*****", rawAfterToggles);
+
+        // Verify no excessive asterisks at all
+        var asteriskCount = rawAfterToggles.Count(c => c == '*');
+        Assert.True(asteriskCount <= 4,
+            $"Expected at most 4 asterisks (2 opening + 2 closing for bold), but found {asteriskCount} in: {rawAfterToggles}");
+    }
+
+    /// <summary>
+    /// Verify that toggling italic an ODD number of times on bold text
+    /// correctly produces ***text*** (bold+italic).
+    /// </summary>
+    [Fact]
+    public async Task BoldPlusItalic_OddItalicToggles_ShouldProduceBoldItalic()
+    {
+        await NavigateToEditor();
+        await FillContentAsync("One two three");
+        await SetTextareaSelection(4, 7); // select "two"
+
+        // Bold first
+        await Page.Locator(".md-btn-bold").ClickAsync();
+        await WaitForOverlayUpdate();
+
+        // Italic once (odd)
+        await Page.Locator(".md-btn-italic").ClickAsync();
+        await WaitForOverlayUpdate();
+
+        var rawValue = await GetRawValue();
+        Assert.Contains("***two***", rawValue);
+    }
+
+    /// <summary>
+    /// Verify that toggling bold on italic text produces ***text***
+    /// (bold+italic), and toggling bold off again returns to *text*.
+    /// </summary>
+    [Fact]
+    public async Task ItalicPlusBold_ToggleBoldOff_ShouldReturnToItalic()
+    {
+        await NavigateToEditor();
+        await FillContentAsync("hello world");
+        await SetTextareaSelection(0, 5); // select "hello"
+
+        // Italic first
+        await Page.Locator(".md-btn-italic").ClickAsync();
+        await WaitForOverlayUpdate();
+
+        var rawAfterItalic = await GetRawValue();
+        Assert.Contains("*hello*", rawAfterItalic);
+
+        // Bold on top of italic
+        await Page.Locator(".md-btn-bold").ClickAsync();
+        await WaitForOverlayUpdate();
+
+        var rawAfterBold = await GetRawValue();
+        Assert.Contains("***hello***", rawAfterBold);
+
+        // Toggle bold off → should return to *hello* (italic only)
+        await Page.Locator(".md-btn-bold").ClickAsync();
+        await WaitForOverlayUpdate();
+
+        var rawAfterBoldOff = await GetRawValue();
+        Assert.Contains("*hello*", rawAfterBoldOff);
+        Assert.DoesNotContain("***hello***", rawAfterBoldOff);
+    }
+
+    // ── Helper DTO ─────────────────────────────────────────────────
+
+    private class TextBoundsForSelection
+    {
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double Width { get; set; }
+        public double Height { get; set; }
+        public double Right { get; set; }
+        public double Bottom { get; set; }
+        public double CenterX { get; set; }
+        public double CenterY { get; set; }
+    }
 }

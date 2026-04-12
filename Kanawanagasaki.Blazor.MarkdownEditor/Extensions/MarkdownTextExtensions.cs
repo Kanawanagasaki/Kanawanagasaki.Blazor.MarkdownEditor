@@ -52,6 +52,45 @@ public static class MarkdownTextExtensions
     {
         int mLen = marker.Length;
 
+        // ── Combined bold+italic (***text***) handling ────────────
+        // When both bold (**) and italic (*) are applied as ***text***,
+        // toggling either one should remove just its own markers rather
+        // than wrapping an additional layer.
+
+        if (marker == "*" && start >= 3 && end + 3 <= text.Length)
+        {
+            if (text.Substring(start - 3, 3) == "***" &&
+                text.Substring(end, 3) == "***")
+            {
+                // Remove italic from ***text*** → **text**
+                string inner = text.Substring(start, end - start);
+                string newText = text.Substring(0, start - 1) + inner + text.Substring(end + 1);
+                return new TextEditResult
+                {
+                    Text = newText,
+                    SelectionStart = start - 1,
+                    SelectionEnd = end - 1,
+                };
+            }
+        }
+
+        if (marker == "**" && start >= 3 && end + 3 <= text.Length)
+        {
+            if (text.Substring(start - 3, 3) == "***" &&
+                text.Substring(end, 3) == "***")
+            {
+                // Remove bold from ***text*** → *text*
+                string inner = text.Substring(start, end - start);
+                string newText = text.Substring(0, start - 2) + inner + text.Substring(end + 2);
+                return new TextEditResult
+                {
+                    Text = newText,
+                    SelectionStart = start - 2,
+                    SelectionEnd = end - 2,
+                };
+            }
+        }
+
         // Check if already wrapped
         bool alreadyWrapped = start >= mLen && end + mLen <= text.Length &&
             text.Substring(start - mLen, mLen) == marker &&
@@ -101,6 +140,55 @@ public static class MarkdownTextExtensions
         if (selected.Contains('\n'))
         {
             var lines = selected.Split('\n');
+
+            // ── Multi-line ***text*** handling ────────────────────
+            if (marker == "*" || marker == "**")
+            {
+                bool allBoldItalic = lines.Any(l => !string.IsNullOrWhiteSpace(l));
+                foreach (var line in lines)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    if (line.Length < 6 ||
+                        !line.StartsWith("***") ||
+                        !line.EndsWith("***"))
+                    {
+                        allBoldItalic = false;
+                        break;
+                    }
+                }
+
+                if (allBoldItalic)
+                {
+                    int totalRemoved = 0;
+                    for (int i = 0; i < lines.Length; i++)
+                    {
+                        if (!string.IsNullOrWhiteSpace(lines[i]))
+                        {
+                            string inner = lines[i].Substring(3, lines[i].Length - 6);
+                            if (marker == "*")
+                            {
+                                // Remove italic: ***text*** → **text**
+                                lines[i] = "**" + inner + "**";
+                                totalRemoved += 2; // 1 asterisk from each side
+                            }
+                            else
+                            {
+                                // Remove bold: ***text*** → *text*
+                                lines[i] = "*" + inner + "*";
+                                totalRemoved += 4; // 2 asterisks from each side
+                            }
+                        }
+                    }
+                    string unwrapped = string.Join("\n", lines);
+                    string newT = text.Substring(0, start) + unwrapped + text.Substring(end);
+                    return new TextEditResult
+                    {
+                        Text = newT,
+                        SelectionStart = start,
+                        SelectionEnd = end - totalRemoved,
+                    };
+                }
+            }
 
             // Check if ALL non-empty lines are already wrapped with this marker
             bool allWrapped = lines.Any(l => !string.IsNullOrWhiteSpace(l));

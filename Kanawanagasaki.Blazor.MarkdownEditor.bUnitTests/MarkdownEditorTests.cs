@@ -309,6 +309,74 @@ public class MarkdownTextExtensionsTests
     }
 
     [Fact]
+    public void ToggleBoldThenItalicTenTimes_ShouldNotAccumulateAsterisks()
+    {
+        // Simulate: "One two three" → select "two" → Bold → Italic × 10
+        string text = "One two three";
+        int start = 4; // start of "two"
+        int end = 7;   // end of "two"
+
+        // Step 1: Bold
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        Assert.Equal("One **two** three", result.Text);
+        text = result.Text;
+        start = result.SelectionStart;
+        end = result.SelectionEnd;
+
+        // Step 2: Italic × 10
+        for (int i = 0; i < 10; i++)
+        {
+            result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+            text = result.Text;
+            start = result.SelectionStart;
+            end = result.SelectionEnd;
+        }
+
+        // After 10 italic toggles (even number), italic should be OFF.
+        // Bold should still be ON.
+        Assert.Equal("One **two** three", text);
+
+        // Verify no excessive asterisks
+        var asteriskCount = text.Count(c => c == '*');
+        Assert.True(asteriskCount <= 4,
+            $"Expected at most 4 asterisks, but found {asteriskCount} in: {text}");
+    }
+
+    [Fact]
+    public void ToggleBoldThenItalicOddTimes_ShouldProduceBoldItalic()
+    {
+        string text = "One two three";
+        int start = 4;
+        int end = 7;
+
+        // Bold
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        text = result.Text;
+        start = result.SelectionStart;
+        end = result.SelectionEnd;
+
+        // Italic once (odd)
+        result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        Assert.Equal("One ***two*** three", result.Text);
+    }
+
+    [Fact]
+    public void ToggleItalicOnBoldItalic_RemovesItalicKeepsBold()
+    {
+        // ***text*** → ToggleItalic → **text**
+        var result = MarkdownTextExtensions.ToggleItalic("***text***", 3, 7);
+        Assert.Equal("**text**", result.Text);
+    }
+
+    [Fact]
+    public void ToggleBoldOnBoldItalic_RemovesBoldKeepsItalic()
+    {
+        // ***text*** → ToggleBold → *text*
+        var result = MarkdownTextExtensions.ToggleBold("***text***", 3, 7);
+        Assert.Equal("*text*", result.Text);
+    }
+
+    [Fact]
     public void ToggleStrikethrough_WrapsSelectedText()
     {
         var result = MarkdownTextExtensions.ToggleStrikethrough("strike text", 0, 6);

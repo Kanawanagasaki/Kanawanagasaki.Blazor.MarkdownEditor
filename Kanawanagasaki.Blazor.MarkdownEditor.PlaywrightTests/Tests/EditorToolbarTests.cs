@@ -723,6 +723,208 @@ public class EditorToolbarTests : EditorTestBase
         Assert.DoesNotContain("***hello***", rawAfterBoldOff);
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    //  Bold + Italic + Strikethrough toggle: smart multi-style
+    // ═══════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Regression test: toggling bold → italic → strikethrough in
+    /// sequence 10 times must NOT keep accumulating markdown markers.
+    /// Each full cycle of 3 toggles should return to plain text.
+    /// After 10 cycles (30 toggles), text should be plain again.
+    /// </summary>
+    [Fact]
+    public async Task BoldItalicStrikethrough_TenCycles_ShouldNotAccumulateMarkers()
+    {
+        await NavigateToEditor();
+        await FillContentAsync("One two three");
+        await FillContentAndWaitForMappings("One two three", 1);
+
+        // ── Select "two" via mouse drag on the overlay ──────────
+        var twoBounds = await Page.EvaluateAsync<TextBoundsForSelection>(@"() => {
+            const overlay = document.querySelector('.md-overlay');
+            const walker = document.createTreeWalker(overlay, NodeFilter.SHOW_TEXT);
+            let node;
+            while ((node = walker.nextNode())) {
+                const idx = node.textContent.indexOf('two');
+                if (idx !== -1) {
+                    const range = document.createRange();
+                    range.setStart(node, idx);
+                    range.setEnd(node, idx + 3);
+                    const rect = range.getBoundingClientRect();
+                    return {
+                        x: rect.x, y: rect.y,
+                        width: rect.width, height: rect.height,
+                        right: rect.right, bottom: rect.bottom,
+                        centerX: rect.x + rect.width / 2,
+                        centerY: rect.y + rect.height / 2
+                    };
+                }
+            }
+            return null;
+        }");
+        Assert.NotNull(twoBounds);
+
+        // Mousedown at start of "two", drag to end of "two", mouseup
+        await Page.Mouse.MoveAsync((float)twoBounds.X, (float)twoBounds.CenterY);
+        await Page.Mouse.DownAsync();
+        await Page.Mouse.MoveAsync((float)twoBounds.Right, (float)twoBounds.CenterY);
+        await Page.Mouse.UpAsync();
+
+        // Wait for selection to be synced
+        await Page.WaitForFunctionAsync(
+            "() => { const ta = document.querySelector('.md-textarea'); return ta && ta.selectionStart !== ta.selectionEnd; }",
+            new PageWaitForFunctionOptions { Timeout = 5000 });
+
+        // ── Click Bold → Italic → Strikethrough × 10 cycles ────
+        var boldBtn = Page.Locator(".md-btn-bold");
+        var italicBtn = Page.Locator(".md-btn-italic");
+        var strikeBtn = Page.Locator("button[title='Strikethrough']");
+
+        for (int cycle = 0; cycle < 10; cycle++)
+        {
+            await boldBtn.ClickAsync();
+            await WaitForOverlayUpdate();
+
+            await italicBtn.ClickAsync();
+            await WaitForOverlayUpdate();
+
+            await strikeBtn.ClickAsync();
+            await WaitForOverlayUpdate();
+        }
+
+        // After 10 full cycles (even number of toggles for each style),
+        // all styles should be OFF — back to plain text.
+        var rawAfterCycles = await GetRawValue();
+        Assert.Equal("One two three", rawAfterCycles.Trim());
+
+        // Verify no excessive markers
+        var markerCount = rawAfterCycles.Count(c => c == '*') + rawAfterCycles.Count(c => c == '~');
+        Assert.True(markerCount == 0,
+            $"Expected no markers after 10 cycles, but found {markerCount} in: {rawAfterCycles}");
+    }
+
+    /// <summary>
+    /// Verify the intermediate states of a single bold→italic→strikethrough
+    /// cycle to ensure markers are in the canonical order (~~***text***~~).
+    /// </summary>
+    [Fact]
+    public async Task BoldItalicStrikethrough_OneCycle_ShouldProduceCorrectIntermediates()
+    {
+        await NavigateToEditor();
+        await FillContentAsync("One two three");
+        await SetTextareaSelection(4, 7); // select "two"
+
+        // Bold on
+        await Page.Locator(".md-btn-bold").ClickAsync();
+        await WaitForOverlayUpdate();
+        var rawAfterBold = await GetRawValue();
+        Assert.Contains("**two**", rawAfterBold);
+
+        // Italic on (on top of bold)
+        await Page.Locator(".md-btn-italic").ClickAsync();
+        await WaitForOverlayUpdate();
+        var rawAfterItalic = await GetRawValue();
+        Assert.Contains("***two***", rawAfterItalic);
+
+        // Strikethrough on (on top of bold+italic)
+        await Page.Locator("button[title='Strikethrough']").ClickAsync();
+        await WaitForOverlayUpdate();
+        var rawAfterStrike = await GetRawValue();
+        Assert.Contains("~~***two***~~", rawAfterStrike);
+
+        // Bold off (keep italic+strikethrough)
+        await Page.Locator(".md-btn-bold").ClickAsync();
+        await WaitForOverlayUpdate();
+        var rawAfterBoldOff = await GetRawValue();
+        Assert.Contains("~~*two*~~", rawAfterBoldOff);
+        Assert.DoesNotContain("***", rawAfterBoldOff);
+
+        // Italic off (keep strikethrough)
+        await Page.Locator(".md-btn-italic").ClickAsync();
+        await WaitForOverlayUpdate();
+        var rawAfterItalicOff = await GetRawValue();
+        Assert.Contains("~~two~~", rawAfterItalicOff);
+
+        // Strikethrough off (all styles off)
+        await Page.Locator("button[title='Strikethrough']").ClickAsync();
+        await WaitForOverlayUpdate();
+        var rawAfterStrikeOff = await GetRawValue();
+        Assert.Equal("One two three", rawAfterStrikeOff.Trim());
+    }
+
+    /// <summary>
+    /// Regression test: clicking bold then strikethrough 10 times on the
+    /// same selection must NOT accumulate markers. After 10 strikethrough
+    /// toggles (even), strikethrough should be OFF and bold should remain.
+    /// </summary>
+    [Fact]
+    public async Task BoldThenStrikethroughTenTimes_ShouldNotAccumulateMarkers()
+    {
+        await NavigateToEditor();
+        await FillContentAsync("One two three");
+        await FillContentAndWaitForMappings("One two three", 1);
+
+        // ── Select "two" via mouse drag on the overlay ──────────
+        var twoBounds = await Page.EvaluateAsync<TextBoundsForSelection>(@"() => {
+            const overlay = document.querySelector('.md-overlay');
+            const walker = document.createTreeWalker(overlay, NodeFilter.SHOW_TEXT);
+            let node;
+            while ((node = walker.nextNode())) {
+                const idx = node.textContent.indexOf('two');
+                if (idx !== -1) {
+                    const range = document.createRange();
+                    range.setStart(node, idx);
+                    range.setEnd(node, idx + 3);
+                    const rect = range.getBoundingClientRect();
+                    return {
+                        x: rect.x, y: rect.y,
+                        width: rect.width, height: rect.height,
+                        right: rect.right, bottom: rect.bottom,
+                        centerX: rect.x + rect.width / 2,
+                        centerY: rect.y + rect.height / 2
+                    };
+                }
+            }
+            return null;
+        }");
+        Assert.NotNull(twoBounds);
+
+        await Page.Mouse.MoveAsync((float)twoBounds.X, (float)twoBounds.CenterY);
+        await Page.Mouse.DownAsync();
+        await Page.Mouse.MoveAsync((float)twoBounds.Right, (float)twoBounds.CenterY);
+        await Page.Mouse.UpAsync();
+
+        await Page.WaitForFunctionAsync(
+            "() => { const ta = document.querySelector('.md-textarea'); return ta && ta.selectionStart !== ta.selectionEnd; }",
+            new PageWaitForFunctionOptions { Timeout = 5000 });
+
+        // ── Click Bold ──────────────────────────────────────────
+        await Page.Locator(".md-btn-bold").ClickAsync();
+        await WaitForOverlayUpdate();
+
+        var rawAfterBold = await GetRawValue();
+        Assert.Contains("**two**", rawAfterBold);
+
+        // ── Click Strikethrough × 10 ────────────────────────────
+        var strikeBtn = Page.Locator("button[title='Strikethrough']");
+        for (int i = 0; i < 10; i++)
+        {
+            await strikeBtn.ClickAsync();
+            await WaitForOverlayUpdate();
+        }
+
+        // After 10 strikethrough toggles (even), strikethrough OFF, bold ON
+        var rawAfterToggles = await GetRawValue();
+        Assert.Contains("**two**", rawAfterToggles);
+        Assert.DoesNotContain("~~", rawAfterToggles);
+
+        // Verify no excessive markers
+        var markerCount = rawAfterToggles.Count(c => c == '*') + rawAfterToggles.Count(c => c == '~');
+        Assert.True(markerCount <= 4,
+            $"Expected at most 4 markers, but found {markerCount} in: {rawAfterToggles}");
+    }
+
     // ── Helper DTO ─────────────────────────────────────────────────
 
     private class TextBoundsForSelection

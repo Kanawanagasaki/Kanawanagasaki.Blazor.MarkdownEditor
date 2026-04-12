@@ -343,6 +343,115 @@ public class MarkdownTextExtensionsTests
     }
 
     [Fact]
+    public void ToggleBoldItalicStrikethrough_TenCycles_ShouldNotAccumulateMarkers()
+    {
+        // Simulate: "One two three" → select "two" →
+        //   Bold → Italic → Strikethrough × 10 cycles (30 toggles total)
+        string text = "One two three";
+        int start = 4; // start of "two"
+        int end = 7;   // end of "two"
+
+        for (int cycle = 0; cycle < 10; cycle++)
+        {
+            var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+            text = result.Text;
+            start = result.SelectionStart;
+            end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+            text = result.Text;
+            start = result.SelectionStart;
+            end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+            text = result.Text;
+            start = result.SelectionStart;
+            end = result.SelectionEnd;
+        }
+
+        // After 10 full cycles (even number of toggles for each style),
+        // all styles should be OFF — back to plain text.
+        Assert.Equal("One two three", text);
+
+        // Verify no excessive markers at all
+        var markerCount = text.Count(c => c == '*') + text.Count(c => c == '~');
+        Assert.True(markerCount == 0,
+            $"Expected no markers, but found {markerCount} in: {text}");
+    }
+
+    [Fact]
+    public void ToggleBoldItalicStrikethrough_OneCycle_ShouldProduceCorrectIntermediates()
+    {
+        // Verify each step of a single bold→italic→strikethrough cycle
+        string text = "One two three";
+        int start = 4;
+        int end = 7;
+
+        // Bold on
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        Assert.Equal("One **two** three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Italic on (on top of bold)
+        result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        Assert.Equal("One ***two*** three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Strikethrough on (on top of bold+italic)
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+        Assert.Equal("One ~~***two***~~ three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Bold off (keep italic+strikethrough)
+        result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        Assert.Equal("One ~~*two*~~ three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Italic off (keep strikethrough)
+        result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        Assert.Equal("One ~~two~~ three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Strikethrough off (all styles off)
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+        Assert.Equal("One two three", result.Text);
+    }
+
+    [Fact]
+    public void ToggleBoldThenStrikethroughTenTimes_ShouldNotAccumulateMarkers()
+    {
+        // Simulate: "One two three" → select "two" → Bold → Strikethrough × 10
+        string text = "One two three";
+        int start = 4;
+        int end = 7;
+
+        // Step 1: Bold
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        Assert.Equal("One **two** three", result.Text);
+        text = result.Text;
+        start = result.SelectionStart;
+        end = result.SelectionEnd;
+
+        // Step 2: Strikethrough × 10
+        for (int i = 0; i < 10; i++)
+        {
+            result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+            text = result.Text;
+            start = result.SelectionStart;
+            end = result.SelectionEnd;
+        }
+
+        // After 10 strikethrough toggles (even number), strikethrough should be OFF.
+        // Bold should still be ON.
+        Assert.Equal("One **two** three", text);
+
+        // Verify no excessive markers
+        var markerCount = text.Count(c => c == '*') + text.Count(c => c == '~');
+        Assert.True(markerCount <= 4,
+            $"Expected at most 4 markers (2** open + 2** close for bold), but found {markerCount} in: {text}");
+    }
+
+    [Fact]
     public void ToggleBoldThenItalicOddTimes_ShouldProduceBoldItalic()
     {
         string text = "One two three";
@@ -394,6 +503,498 @@ public class MarkdownTextExtensionsTests
         Assert.Equal("`code` text", result.Text);
         Assert.Equal(1, result.SelectionStart);
         Assert.Equal(5, result.SelectionEnd);
+    }
+
+    [Fact]
+    public void ToggleInlineCode_UnwrapsWhenAlreadyCode()
+    {
+        var result = MarkdownTextExtensions.ToggleInlineCode("`code` text", 1, 5);
+
+        Assert.Equal("code text", result.Text);
+        Assert.Equal(0, result.SelectionStart);
+        Assert.Equal(4, result.SelectionEnd);
+    }
+
+    [Fact]
+    public void ToggleInlineCode_NoSelection_InsertsEmptyMarkers()
+    {
+        var result = MarkdownTextExtensions.ToggleInlineCode("hello", 2, 2);
+
+        Assert.Equal("he``llo", result.Text);
+        Assert.Equal(3, result.SelectionStart);
+        Assert.Equal(3, result.SelectionEnd);
+    }
+
+    // ── Italic + Code combined toggle tests ──────────────────────
+
+    [Fact]
+    public void ToggleItalicThenCode_TenCycles_ShouldNotAccumulateMarkers()
+    {
+        // User's exact scenario: "One two three" → select "two" →
+        //   Italic → Code → Italic → Code ... (10 cycles = 20 toggles)
+        string text = "One two three";
+        int start = 4;
+        int end = 7;
+
+        for (int cycle = 0; cycle < 10; cycle++)
+        {
+            var result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+            text = result.Text;
+            start = result.SelectionStart;
+            end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+            text = result.Text;
+            start = result.SelectionStart;
+            end = result.SelectionEnd;
+        }
+
+        // After 10 full cycles (even number of toggles for each style),
+        // all styles should be OFF — back to plain text.
+        Assert.Equal("One two three", text);
+
+        // Verify zero markers
+        var markerCount = text.Count(c => c == '*') + text.Count(c => c == '`');
+        Assert.True(markerCount == 0,
+            $"Expected no markers, but found {markerCount} in: {text}");
+    }
+
+    [Fact]
+    public void ToggleItalicThenCode_OneCycle_ShouldProduceCorrectIntermediates()
+    {
+        // Verify each step of Italic → Code → Italic → Code
+        string text = "One two three";
+        int start = 4;
+        int end = 7;
+
+        // Italic ON
+        var result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        Assert.Equal("One *two* three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Code ON (on top of italic) → canonical: *`two`*
+        result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+        Assert.Equal("One *`two`* three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Italic OFF (keep code) → just `two`
+        result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        Assert.Equal("One `two` three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Code OFF (all off)
+        result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+        Assert.Equal("One two three", result.Text);
+    }
+
+    // ── All four styles combined toggle tests ────────────────────
+
+    [Fact]
+    public void ToggleAllFourStyles_TenCycles_ShouldNotAccumulateMarkers()
+    {
+        // Ultimate test: Bold → Italic → Strikethrough → Code × 10 cycles
+        string text = "One two three";
+        int start = 4;
+        int end = 7;
+
+        for (int cycle = 0; cycle < 10; cycle++)
+        {
+            var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+            text = result.Text;
+            start = result.SelectionStart;
+            end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+            text = result.Text;
+            start = result.SelectionStart;
+            end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+            text = result.Text;
+            start = result.SelectionStart;
+            end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+            text = result.Text;
+            start = result.SelectionStart;
+            end = result.SelectionEnd;
+        }
+
+        // After 10 full cycles (even number of toggles for each style),
+        // all styles should be OFF — back to plain text.
+        Assert.Equal("One two three", text);
+
+        var markerCount = text.Count(c => c == '*') + text.Count(c => c == '~') + text.Count(c => c == '`');
+        Assert.True(markerCount == 0,
+            $"Expected no markers, but found {markerCount} in: {text}");
+    }
+
+    [Fact]
+    public void ToggleAllFourStyles_OneCycle_ShouldProduceCorrectIntermediates()
+    {
+        // Verify each step of Bold → Italic → Strikethrough → Code
+        string text = "One two three";
+        int start = 4;
+        int end = 7;
+
+        // Bold ON
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        Assert.Equal("One **two** three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Italic ON (on top of bold) → merged as ***
+        result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        Assert.Equal("One ***two*** three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Strikethrough ON (on top of bold+italic)
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+        Assert.Equal("One ~~***two***~~ three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Code ON (innermost, on top of all)
+        result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+        Assert.Equal("One ~~***`two`***~~ three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Bold OFF (keep italic+strikethrough+code)
+        result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        Assert.Equal("One ~~*`two`*~~ three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Italic OFF (keep strikethrough+code)
+        result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        Assert.Equal("One ~~`two`~~ three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Strikethrough OFF (keep code)
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+        Assert.Equal("One `two` three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Code OFF (all off)
+        result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+        Assert.Equal("One two three", result.Text);
+    }
+
+    // ── Pairwise two-style toggle tests (every combination ×10) ──
+
+    [Fact]
+    public void ToggleBoldThenCode_TenCycles_ShouldNotAccumulateMarkers()
+    {
+        string text = "One two three";
+        int start = 4;
+        int end = 7;
+
+        for (int cycle = 0; cycle < 10; cycle++)
+        {
+            var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+        }
+
+        Assert.Equal("One two three", text);
+    }
+
+    [Fact]
+    public void ToggleStrikethroughThenCode_TenCycles_ShouldNotAccumulateMarkers()
+    {
+        string text = "One two three";
+        int start = 4;
+        int end = 7;
+
+        for (int cycle = 0; cycle < 10; cycle++)
+        {
+            var result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+        }
+
+        Assert.Equal("One two three", text);
+    }
+
+    [Fact]
+    public void ToggleItalicThenBoldThenCode_TenCycles_ShouldNotAccumulateMarkers()
+    {
+        string text = "One two three";
+        int start = 4;
+        int end = 7;
+
+        for (int cycle = 0; cycle < 10; cycle++)
+        {
+            var result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleBold(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+        }
+
+        Assert.Equal("One two three", text);
+    }
+
+    [Fact]
+    public void ToggleCodeOnItalicCode_RemovesCodeKeepsItalic()
+    {
+        // *`text`* → ToggleInlineCode → *text*
+        var result = MarkdownTextExtensions.ToggleInlineCode("*`text`*", 2, 6);
+        Assert.Equal("*text*", result.Text);
+    }
+
+    [Fact]
+    public void ToggleItalicOnItalicCode_RemovesItalicKeepsCode()
+    {
+        // *`text`* → ToggleItalic → `text`
+        var result = MarkdownTextExtensions.ToggleItalic("*`text`*", 2, 6);
+        Assert.Equal("`text`", result.Text);
+    }
+
+    [Fact]
+    public void ToggleBoldOnBoldCode_RemovesBoldKeepsCode()
+    {
+        // **`text`** → ToggleBold → `text`
+        var result = MarkdownTextExtensions.ToggleBold("**`text`**", 3, 7);
+        Assert.Equal("`text`", result.Text);
+    }
+
+    [Fact]
+    public void ToggleStrikethroughOnStrikethroughCode_RemovesStrikethroughKeepsCode()
+    {
+        // ~~`text`~~ → ToggleStrikethrough → `text`
+        var result = MarkdownTextExtensions.ToggleStrikethrough("~~`text`~~", 3, 7);
+        Assert.Equal("`text`", result.Text);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Multi-line inline toggle tests
+    // ═══════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void MultiLine_ToggleBold_WrapsAllLines()
+    {
+        // "One two three\nfour five six\nseven eight nine"
+        // Selection: "two three\nfour five six\nseven eight" (pos 4..38)
+        string text = "One two three\nfour five six\nseven eight nine";
+        int start = 4;
+        int end = 4 + "two three\nfour five six\nseven eight".Length; // 4+35=39
+
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+
+        Assert.Equal("One **two three**\n**four five six**\n**seven eight** nine", result.Text);
+        // Selection should include all markers so subsequent toggles work
+        string selected = result.Text.Substring(result.SelectionStart, result.SelectionEnd - result.SelectionStart);
+        Assert.Equal("**two three**\n**four five six**\n**seven eight**", selected);
+    }
+
+    [Fact]
+    public void MultiLine_ToggleBoldThenCode_ShouldNotAccumulateMarkers()
+    {
+        string text = "One two three\nfour five six\nseven eight nine";
+        int start = 4;
+        int end = 4 + "two three\nfour five six\nseven eight".Length;
+
+        // Toggle Bold
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Toggle Code
+        result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Verify both markers present on each line
+        Assert.Equal("One **`two three`**\n**`four five six`**\n**`seven eight`** nine", text);
+
+        // Toggle Code OFF (should remove code, keep bold)
+        result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        Assert.Equal("One **two three**\n**four five six**\n**seven eight** nine", text);
+
+        // Toggle Bold OFF (should remove bold too)
+        result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        Assert.Equal("One two three\nfour five six\nseven eight nine", text);
+    }
+
+    [Fact]
+    public void MultiLine_ToggleBoldThenCode_TenCycles_ShouldNotAccumulateMarkers()
+    {
+        // Bold → Code × 10 cycles on multi-line selection
+        string text = "One two three\nfour five six\nseven eight nine";
+        int start = 4;
+        int end = 4 + "two three\nfour five six\nseven eight".Length;
+
+        for (int cycle = 0; cycle < 10; cycle++)
+        {
+            var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+        }
+
+        // After 10 full cycles (even toggles for each), all styles OFF
+        Assert.Equal("One two three\nfour five six\nseven eight nine", text);
+    }
+
+    [Fact]
+    public void MultiLine_ToggleAllFourStyles_TenCycles_ShouldNotAccumulateMarkers()
+    {
+        // Bold → Italic → Strikethrough → Code × 10 cycles on multi-line
+        string text = "One two three\nfour five six\nseven eight nine";
+        int start = 4;
+        int end = 4 + "two three\nfour five six\nseven eight".Length;
+
+        for (int cycle = 0; cycle < 10; cycle++)
+        {
+            var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+        }
+
+        // After 10 full cycles (even toggles for each), all styles OFF
+        Assert.Equal("One two three\nfour five six\nseven eight nine", text);
+
+        // Verify zero markers
+        var markerCount = text.Count(c => c == '*') + text.Count(c => c == '~') + text.Count(c => c == '`');
+        Assert.True(markerCount == 0,
+            $"Expected no markers, but found {markerCount} in: {text}");
+    }
+
+    [Fact]
+    public void MultiLine_ToggleItalicThenCode_TenCycles_ShouldNotAccumulateMarkers()
+    {
+        // Italic → Code × 10 cycles on multi-line
+        string text = "One two three\nfour five six\nseven eight nine";
+        int start = 4;
+        int end = 4 + "two three\nfour five six\nseven eight".Length;
+
+        for (int cycle = 0; cycle < 10; cycle++)
+        {
+            var result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+        }
+
+        Assert.Equal("One two three\nfour five six\nseven eight nine", text);
+    }
+
+    [Fact]
+    public void MultiLine_ToggleStrikethroughThenCode_TenCycles_ShouldNotAccumulateMarkers()
+    {
+        // Strikethrough → Code × 10 cycles on multi-line
+        string text = "One two three\nfour five six\nseven eight nine";
+        int start = 4;
+        int end = 4 + "two three\nfour five six\nseven eight".Length;
+
+        for (int cycle = 0; cycle < 10; cycle++)
+        {
+            var result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+        }
+
+        Assert.Equal("One two three\nfour five six\nseven eight nine", text);
+    }
+
+    [Fact]
+    public void MultiLine_ToggleAllFourStyles_OneCycle_ShouldProduceCorrectIntermediates()
+    {
+        string text = "One two three\nfour five six\nseven eight nine";
+        int start = 4;
+        int end = 4 + "two three\nfour five six\nseven eight".Length;
+
+        // Bold ON
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        Assert.Equal("One **two three**\n**four five six**\n**seven eight** nine", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Italic ON (merged with bold → ***)
+        result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        Assert.Equal("One ***two three***\n***four five six***\n***seven eight*** nine", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Strikethrough ON (outermost)
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+        Assert.Equal("One ~~***two three***~~\n~~***four five six***~~\n~~***seven eight***~~ nine", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Code ON (innermost)
+        result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+        Assert.Equal("One ~~***`two three`***~~\n~~***`four five six`***~~\n~~***`seven eight`***~~ nine", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Bold OFF (keep italic+strikethrough+code)
+        result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        Assert.Equal("One ~~*`two three`*~~\n~~*`four five six`*~~\n~~*`seven eight`*~~ nine", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Italic OFF (keep strikethrough+code)
+        result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        Assert.Equal("One ~~`two three`~~\n~~`four five six`~~\n~~`seven eight`~~ nine", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Strikethrough OFF (keep code)
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+        Assert.Equal("One `two three`\n`four five six`\n`seven eight` nine", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Code OFF (all off)
+        result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+        Assert.Equal("One two three\nfour five six\nseven eight nine", result.Text);
+    }
+
+    [Fact]
+    public void MultiLine_ToggleBold_UnwrapsAllLines()
+    {
+        // Start with bold already applied, then toggle it off
+        string text = "One **two three**\n**four five six**\n**seven eight** nine";
+        // Selection covers the marked-up text including markers
+        int start = 4;
+        int end = 4 + "**two three**\n**four five six**\n**seven eight**".Length;
+
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+
+        Assert.Equal("One two three\nfour five six\nseven eight nine", result.Text);
+    }
+
+    [Fact]
+    public void MultiLine_TwoLines_ToggleBoldThenCode_TenCycles()
+    {
+        // Smaller multi-line: just 2 lines
+        string text = "hello world\nfoo bar";
+        int start = 6; // "world"
+        int end = 6 + "world\nfoo".Length;
+
+        for (int cycle = 0; cycle < 10; cycle++)
+        {
+            var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+            result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+            text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+        }
+
+        Assert.Equal("hello world\nfoo bar", text);
     }
 
     [Fact]

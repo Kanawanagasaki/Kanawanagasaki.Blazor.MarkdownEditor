@@ -65,7 +65,7 @@ public static class MarkdownRenderer
                         htmlSb.Append(EscapeHtml(cl.Text));
                         htmlSb.Append("</div>");
                     }
-                    htmlSb.AppendLine("</code></pre>");
+                    htmlSb.Append("</code></pre>");
 
                     // Merge code block mappings into the main list
                     mappings.AddRange(codeBlockMappings);
@@ -96,7 +96,7 @@ public static class MarkdownRenderer
             {
                 htmlSb.Append($"<div class=\"md-line md-hr-line\" data-line-index=\"{i}\" data-source-start=\"{pos}\">");
                 htmlSb.Append("<hr class=\"md-hr\" />");
-                htmlSb.AppendLine("</div>");
+                htmlSb.Append("</div>");
 
                 mappings.Add(new LineMapping { SourceStart = pos, VisibleToSource = Array.Empty<int>() });
                 pos += line.Length + 1;
@@ -112,7 +112,7 @@ public static class MarkdownRenderer
                 htmlSb.Append($"<div class=\"md-line\" data-line-index=\"{i}\" data-source-start=\"{pos}\">");
                 htmlSb.Append($"<{tag} class=\"md-h md-h{headingLevel}\">");
                 htmlSb.Append(inline.Html);
-                htmlSb.AppendLine($"</{tag}></div>");
+                htmlSb.Append($"</{tag}></div>");
 
                 mappings.Add(new LineMapping { SourceStart = pos, VisibleToSource = inline.VisibleToSource.ToArray() });
                 pos += line.Length + 1;
@@ -128,7 +128,7 @@ public static class MarkdownRenderer
                 htmlSb.Append($"<div class=\"md-line md-bq-line\" data-line-index=\"{i}\" data-source-start=\"{pos}\">");
                 htmlSb.Append("<blockquote class=\"md-bq\">");
                 htmlSb.Append(inline.Html);
-                htmlSb.AppendLine("</blockquote></div>");
+                htmlSb.Append("</blockquote></div>");
 
                 mappings.Add(new LineMapping { SourceStart = pos, VisibleToSource = inline.VisibleToSource.ToArray() });
                 pos += line.Length + 1;
@@ -136,7 +136,7 @@ public static class MarkdownRenderer
             }
             if (line == ">")
             {
-                htmlSb.AppendLine($"<div class=\"md-line md-bq-line\" data-line-index=\"{i}\" data-source-start=\"{pos}\"></div>");
+                htmlSb.Append($"<div class=\"md-line md-bq-line\" data-line-index=\"{i}\" data-source-start=\"{pos}\"></div>");
                 mappings.Add(new LineMapping { SourceStart = pos, VisibleToSource = Array.Empty<int>() });
                 pos += line.Length + 1;
                 continue;
@@ -151,7 +151,7 @@ public static class MarkdownRenderer
                 htmlSb.Append($"<div class=\"md-line md-li-line\" data-line-index=\"{i}\" data-source-start=\"{pos}\">");
                 htmlSb.Append("<span class=\"md-li-marker\" aria-hidden=\"true\"></span>");
                 htmlSb.Append(inline.Html);
-                htmlSb.AppendLine("</div>");
+                htmlSb.Append("</div>");
 
                 mappings.Add(new LineMapping { SourceStart = pos, VisibleToSource = inline.VisibleToSource.ToArray() });
                 pos += line.Length + 1;
@@ -166,7 +166,7 @@ public static class MarkdownRenderer
                 htmlSb.Append($"<div class=\"md-line md-li-line\" data-line-index=\"{i}\" data-source-start=\"{pos}\">");
                 htmlSb.Append($"<span class=\"md-oli-marker\" aria-hidden=\"true\" data-marker=\"{olMarker.TrimEnd('.', ' ')}.\"></span>");
                 htmlSb.Append(inline.Html);
-                htmlSb.AppendLine("</div>");
+                htmlSb.Append("</div>");
 
                 mappings.Add(new LineMapping { SourceStart = pos, VisibleToSource = inline.VisibleToSource.ToArray() });
                 pos += line.Length + 1;
@@ -176,7 +176,7 @@ public static class MarkdownRenderer
             // ── empty line → paragraph break ──────────────────
             if (string.IsNullOrWhiteSpace(line))
             {
-                htmlSb.AppendLine($"<div class=\"md-line md-empty\" data-line-index=\"{i}\" data-source-start=\"{pos}\"></div>");
+                htmlSb.Append($"<div class=\"md-line md-empty\" data-line-index=\"{i}\" data-source-start=\"{pos}\"></div>");
                 mappings.Add(new LineMapping { SourceStart = pos, VisibleToSource = Array.Empty<int>() });
                 pos += line.Length + 1;
                 continue;
@@ -187,7 +187,7 @@ public static class MarkdownRenderer
 
             htmlSb.Append($"<div class=\"md-line\" data-line-index=\"{i}\" data-source-start=\"{pos}\">");
             htmlSb.Append(paraInline.Html);
-            htmlSb.AppendLine("</div>");
+            htmlSb.Append("</div>");
 
             mappings.Add(new LineMapping { SourceStart = pos, VisibleToSource = paraInline.VisibleToSource.ToArray() });
             pos += line.Length + 1;

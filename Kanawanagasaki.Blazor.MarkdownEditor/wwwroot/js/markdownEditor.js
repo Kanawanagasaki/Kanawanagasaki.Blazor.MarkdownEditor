@@ -227,11 +227,12 @@ function updateCursor(inst) {
 
     // Y position and height
     const overlayRect = overlay.getBoundingClientRect();
+    const paddingTop = parseFloat(getComputedStyle(overlay).paddingTop);
     const paddingLeft = parseFloat(getComputedStyle(overlay).paddingLeft);
 
     if (!overlayLine) {
         // Empty editor or line not found — place cursor at top with fallback height
-        cursorEl.style.top = '0px';
+        cursorEl.style.top = paddingTop + 'px';
         cursorEl.style.height = inst.lineHeight + 'px';
         cursorEl.style.left = paddingLeft + 'px';
     } else {

@@ -126,9 +126,7 @@
         </textarea>
 
         @* Overlay: visual layer, captures clicks and wheel events *@
-        <div class="md-overlay" @ref="_overlay">
-            @((MarkupString)_renderedHtml)
-        </div>
+        <div class="md-overlay" @ref="_overlay">@((MarkupString)_renderedHtml)</div>
 
         @* Simulated cursor: positioned by JS on top of everything *@
         <div class="md-cursor" @ref="_cursor"></div>

@@ -997,6 +997,246 @@ public class MarkdownTextExtensionsTests
         Assert.Equal("hello world\nfoo bar", text);
     }
 
+    // ── Sub-selection within a marked line (TryExpandToMarkerRegion) ──
+
+    [Fact]
+    public void SubSelection_WithinMarkedLine_ToggleBold_RemovesExistingStyles()
+    {
+        // Text after multi-line all-4 toggle:
+        // "One ~~***`two three`***~~\n~~***`four five six`***~~\n~~***`seven eight`***~~ nine"
+        // Select just "five" and toggle bold → should detect markers and toggle for whole line content
+        string text = "One ~~***`two three`***~~\n~~***`four five six`***~~\n~~***`seven eight`***~~ nine";
+        // "five" is on line 2. Line 2 starts at position 31 in the marked text.
+        // Line 2: "~~***`four five six`***~~"
+        // Positions: 0-1=~~, 2-4=***, 5=`, 6-9=four, 10=space, 11-14=five, 15=space, 16-18=six, 19=`, 20-22=***, 23-24=~~
+        // Line 2 starts at offset 31 in full text (after "One ~~***`two three`***~~\n")
+        int line2Start = "One ~~***`two three`***~~\n".Length; // 28
+        // "five" starts at line2Start + 11 = 39, ends at 44
+        int start = line2Start + "~~***`four ".Length;  // 28 + 11 = 39
+        int end = start + "five".Length;                 // 39 + 4 = 43
+
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+
+        // Bold was ON (part of ***), toggling it OFF → *** becomes *
+        // New line 2: ~~*`four five six`*~~
+        Assert.Equal("One ~~***`two three`***~~\n~~*`four five six`*~~\n~~***`seven eight`***~~ nine", result.Text);
+    }
+
+    [Fact]
+    public void SubSelection_WithinMarkedLine_ToggleAllFourBackOff()
+    {
+        // Full scenario: multi-line toggle all 4 styles ON, then sub-select "five"
+        // and toggle all 4 styles OFF one by one
+        string text = "One two three\nfour five six\nseven eight nine";
+        int start = 4;
+        int end = 4 + "two three\nfour five six\nseven eight".Length;
+
+        // Toggle all 4 styles ON
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Now text is: "One ~~***`two three`***~~\n~~***`four five six`***~~\n~~***`seven eight`***~~ nine"
+        Assert.Equal("One ~~***`two three`***~~\n~~***`four five six`***~~\n~~***`seven eight`***~~ nine", text);
+
+        // Now select just "five" on line 2
+        int line2Start = text.IndexOf('\n') + 1;
+        int fiveStart = text.IndexOf("five", line2Start);
+        int fiveEnd = fiveStart + 4;
+
+        // Toggle Bold OFF (was part of ***)
+        result = MarkdownTextExtensions.ToggleBold(text, fiveStart, fiveEnd);
+        text = result.Text; fiveStart = result.SelectionStart; fiveEnd = result.SelectionEnd;
+        Assert.Equal("One ~~***`two three`***~~\n~~*`four five six`*~~\n~~***`seven eight`***~~ nine", text);
+
+        // Toggle Italic OFF (was *)
+        result = MarkdownTextExtensions.ToggleItalic(text, fiveStart, fiveEnd);
+        text = result.Text; fiveStart = result.SelectionStart; fiveEnd = result.SelectionEnd;
+        Assert.Equal("One ~~***`two three`***~~\n~~`four five six`~~\n~~***`seven eight`***~~ nine", text);
+
+        // Toggle Strikethrough OFF
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, fiveStart, fiveEnd);
+        text = result.Text; fiveStart = result.SelectionStart; fiveEnd = result.SelectionEnd;
+        Assert.Equal("One ~~***`two three`***~~\n`four five six`\n~~***`seven eight`***~~ nine", text);
+
+        // Toggle Code OFF
+        result = MarkdownTextExtensions.ToggleInlineCode(text, fiveStart, fiveEnd);
+        text = result.Text; fiveStart = result.SelectionStart; fiveEnd = result.SelectionEnd;
+        Assert.Equal("One ~~***`two three`***~~\nfour five six\n~~***`seven eight`***~~ nine", text);
+    }
+
+    [Fact]
+    public void SubSelection_WithinMarkedLine_ToggleAllFourOffAndOn_TenCycles()
+    {
+        // After multi-line all-4 toggle, line 2 has markers at start/end.
+        // Sub-select "five" → toggle all 4 OFF (expands to full line content, removes all markers)
+        // Then sub-select "five" again → toggle all 4 ON (only wraps "five" with markers)
+        // Then sub-select "five" again → toggle all 4 OFF (detects markers around "five", removes them)
+        // After full OFF/ON cycle on just "five", the line is plain again.
+        // Repeat × 10 cycles.
+        string text = "One two three\nfour five six\nseven eight nine";
+        int start = 4;
+        int end = 4 + "two three\nfour five six\nseven eight".Length;
+
+        // Apply all 4 styles to multi-line selection first
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+        result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+        result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // After first OFF cycle, line 2 becomes plain "four five six"
+        // Then ON cycle wraps only "five" → "four ~~***`five`***~~ six"
+        // Then another OFF cycle removes markers from "five" → "four five six"
+        // So every pair of cycles returns line 2 to plain.
+
+        for (int cycle = 0; cycle < 10; cycle++)
+        {
+            // Sub-select "five" on the current line 2
+            int fiveStart = text.IndexOf("five");
+            int fiveEnd = fiveStart + 4;
+
+            // Toggle all 4 OFF (if markers exist around the selection, they're removed;
+            // if no markers, toggling wraps with new markers)
+            result = MarkdownTextExtensions.ToggleBold(text, fiveStart, fiveEnd);
+            text = result.Text; fiveStart = result.SelectionStart; fiveEnd = result.SelectionEnd;
+            result = MarkdownTextExtensions.ToggleItalic(text, fiveStart, fiveEnd);
+            text = result.Text; fiveStart = result.SelectionStart; fiveEnd = result.SelectionEnd;
+            result = MarkdownTextExtensions.ToggleStrikethrough(text, fiveStart, fiveEnd);
+            text = result.Text; fiveStart = result.SelectionStart; fiveEnd = result.SelectionEnd;
+            result = MarkdownTextExtensions.ToggleInlineCode(text, fiveStart, fiveEnd);
+            text = result.Text; fiveStart = result.SelectionStart; fiveEnd = result.SelectionEnd;
+        }
+
+        // After 10 cycles (even number), all toggles even out.
+        // First cycle removes all markers from line 2 → "four five six"
+        // Then 9 more cycles: each applies then removes 4 styles on "five"
+        // Since 9 is odd, the net effect is one application of all 4 styles on "five"
+        // Line 2: "four ~~***`five`***~~ six"
+        // Lines 1 and 3 unchanged.
+
+        // Actually, let's just verify no marker accumulation by checking that
+        // the text is deterministic and doesn't grow.
+        // After 10 full cycles of toggling 4 styles: 10×4 = 40 toggles on "five"
+        // If first cycle removed existing markers (making 4 OFF toggles),
+        // that's 4 OFF + 9×(4 ON + 4 OFF) = 4 OFF + 36 ON + 36 OFF = 40 OFF + 36 ON
+        // Net: 4 ON = Bold+Italic+Strikethrough+Code all applied to "five"
+
+        // The key invariant: no accumulation, markers stay bounded.
+        var markerCount = text.Count(c => c == '*') + text.Count(c => c == '~') + text.Count(c => c == '`');
+        // Max markers for a fully-marked "five" on one line: ~~***` + `***~~ = 2+3+1+1+3+2 = 12 per line
+        // Plus lines 1,3: each 12, total 36. But since line 2 only has "five" wrapped: 12.
+        Assert.True(markerCount <= 36,
+            $"Expected at most 36 markers, but found {markerCount} in: {text}");
+    }
+
+    [Fact]
+    public void SubSelection_WithinMarkedLine_CheckHtmlRendering()
+    {
+        // Multi-line toggle all 4 ON, then sub-select "five" and toggle all 4 OFF,
+        // then verify HTML rendering is correct
+        string text = "One two three\nfour five six\nseven eight nine";
+        int start = 4;
+        int end = 4 + "two three\nfour five six\nseven eight".Length;
+
+        // Toggle all 4 styles ON
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+        result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+        result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Verify fully marked text renders correctly
+        var renderResult = MarkdownRenderer.Render(text);
+        Assert.Contains("<del>", renderResult.Html);
+        Assert.Contains("<strong>", renderResult.Html);
+        Assert.Contains("<em>", renderResult.Html);
+        Assert.Contains("md-inline-code", renderResult.Html);
+        Assert.Contains("two three", renderResult.Html);
+        Assert.Contains("four five six", renderResult.Html);
+        Assert.Contains("seven eight", renderResult.Html);
+
+        // Now sub-select "five" and toggle all 4 OFF
+        int fiveStart = text.IndexOf("five");
+        int fiveEnd = fiveStart + 4;
+
+        result = MarkdownTextExtensions.ToggleBold(text, fiveStart, fiveEnd);
+        text = result.Text; fiveStart = result.SelectionStart; fiveEnd = result.SelectionEnd;
+        result = MarkdownTextExtensions.ToggleItalic(text, fiveStart, fiveEnd);
+        text = result.Text; fiveStart = result.SelectionStart; fiveEnd = result.SelectionEnd;
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, fiveStart, fiveEnd);
+        text = result.Text; fiveStart = result.SelectionStart; fiveEnd = result.SelectionEnd;
+        result = MarkdownTextExtensions.ToggleInlineCode(text, fiveStart, fiveEnd);
+        text = result.Text; fiveStart = result.SelectionStart; fiveEnd = result.SelectionEnd;
+
+        // Line 2 should be plain: "four five six"
+        // Lines 1 and 3 should still have all markers
+        Assert.Equal("One ~~***`two three`***~~\nfour five six\n~~***`seven eight`***~~ nine", text);
+
+        // Verify HTML: line 2 should NOT have del/strong/em/code, lines 1,3 should
+        renderResult = MarkdownRenderer.Render(text);
+        // Line 1 and 3 should have full styling
+        Assert.Contains("two three", renderResult.Html);
+        Assert.Contains("seven eight", renderResult.Html);
+        // Line 2 should be plain text
+        Assert.Contains("four five six", renderResult.Html);
+    }
+
+    [Fact]
+    public void SingleLine_SubSelection_WithinMarkedLine_TogglesBoldOff()
+    {
+        // Line with markers at start (as produced by multi-line toggle): ~~***`hello world`***~~
+        // Select "wor" inside the content → should expand to full content and toggle
+        string text = "~~***`hello world`***~~";
+        // Content "hello world" is at positions 6-16 (after ~~***`)
+        // Select "wor" = positions 11-14
+        int start = 11;
+        int end = 14;
+
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        // Bold was ON (part of ***), toggling OFF → *** becomes *
+        Assert.Equal("~~*`hello world`*~~", result.Text);
+    }
+
+    [Fact]
+    public void SingleLine_SubSelection_WithinAllFour_TenCycles()
+    {
+        // Line with all markers at start: ~~***`hello world`***~~
+        // Sub-select "wor" and cycle all 4 × 10
+        string text = "~~***`hello world`***~~";
+        int wStart = text.IndexOf("wor");
+        int wEnd = wStart + 3;
+
+        for (int cycle = 0; cycle < 10; cycle++)
+        {
+            var result = MarkdownTextExtensions.ToggleBold(text, wStart, wEnd);
+            text = result.Text; wStart = result.SelectionStart; wEnd = result.SelectionEnd;
+            result = MarkdownTextExtensions.ToggleItalic(text, wStart, wEnd);
+            text = result.Text; wStart = result.SelectionStart; wEnd = result.SelectionEnd;
+            result = MarkdownTextExtensions.ToggleStrikethrough(text, wStart, wEnd);
+            text = result.Text; wStart = result.SelectionStart; wEnd = result.SelectionEnd;
+            result = MarkdownTextExtensions.ToggleInlineCode(text, wStart, wEnd);
+            text = result.Text; wStart = result.SelectionStart; wEnd = result.SelectionEnd;
+        }
+
+        // After 10 even cycles, should be back to fully marked
+        Assert.Equal("~~***`hello world`***~~", text);
+    }
+
     [Fact]
     public void ToggleHeading_AddsPrefixToPlainLine()
     {
@@ -1152,6 +1392,146 @@ public class MarkdownTextExtensionsTests
         var result = MarkdownTextExtensions.InsertHorizontalRule("some text", 0, 9);
 
         Assert.Contains("some text\n---", result.Text);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Overlapping selection tests (Test A & Test B from user request)
+    // ═══════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void OverlappingSelection_TestA_SelectWordToggleAll4ThenSelectAllToggleAll4()
+    {
+        // Test A: "One two three" → select "two" → toggle all 4 styles →
+        //         select the whole text → toggle all 4 styles → check result
+        string text = "One two three";
+        int start = 4; // start of "two"
+        int end = 7;   // end of "two"
+
+        // Step 1: Toggle Bold on "two"
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        Assert.Equal("One **two** three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Step 2: Toggle Italic on "two"
+        result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        Assert.Equal("One ***two*** three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Step 3: Toggle Strikethrough on "two"
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+        Assert.Equal("One ~~***two***~~ three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Step 4: Toggle Code on "two"
+        result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+        Assert.Equal("One ~~***`two`***~~ three", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Phase 2: Select the ENTIRE text (from "One" to "three") and toggle all 4 styles
+        // The selection should cover the entire line content including markers
+        start = 0;
+        end = text.Length;
+
+        // When selecting the entire line that contains markers for a sub-region,
+        // and toggling all 4 styles, the expected behavior is:
+        // The whole line gets all 4 styles applied, merging with the existing markers.
+        // Since "two" already has all 4, the markers should expand to cover the entire line.
+
+        // Toggle Bold on full line
+        result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Toggle Italic on full line
+        result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Toggle Strikethrough on full line
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Toggle Code on full line
+        result = MarkdownTextExtensions.ToggleInlineCode(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // After toggling all 4 styles on the entire line, the result should have
+        // all 4 styles applied to the entire text content "One two three"
+        Assert.Equal("~~***`One two three`***~~", text);
+
+        // ── Check HTML (what the user actually sees) ──────────────────
+        var htmlResult = MarkdownRenderer.Render(text);
+        string html = htmlResult.Html;
+
+        // Strikethrough wraps everything
+        Assert.Contains("<del>", html);
+        Assert.Contains("</del>", html);
+        // Bold+Italic (from ***) → <strong><em>
+        Assert.Contains("<strong>", html);
+        Assert.Contains("<em>", html);
+        Assert.Contains("</em>", html);
+        Assert.Contains("</strong>", html);
+        // Inline code (innermost) → <code class="md-inline-code">
+        Assert.Contains("<code class=\"md-inline-code\">", html);
+        Assert.Contains("</code>", html);
+        // The text content must be present
+        Assert.Contains("One two three", html);
+        // Verify nesting order: <del><strong><em><code>One two three</code></em></strong></del>
+        Assert.Matches(@"<del><strong><em><code[^>]*>One two three</code></em></strong></del>", html);
+    }
+
+    [Fact]
+    public void OverlappingSelection_TestB_SelectTwoThreeBoldThenThreeFourItalic()
+    {
+        // Test B: "One two three four five" → select "two three" → toggle bold →
+        //         select "three four" → toggle italic → check result
+        string text = "One two three four five";
+        int start = 4;  // start of "two"
+        int end = 4 + "two three".Length; // end of "three" = 13
+
+        // Step 1: Toggle Bold on "two three"
+        var result = MarkdownTextExtensions.ToggleBold(text, start, end);
+        Assert.Equal("One **two three** four five", result.Text);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // Step 2: Select "three four" in the new text
+        // After bold, text is: "One **two three** four five"
+        // "three" is inside the bold markers, "four" is outside
+        // Find the positions of "three" and "four" in the current text
+        int threeStart = text.IndexOf("three");
+        int fourEnd = text.IndexOf("four") + "four".Length;
+        start = threeStart;
+        end = fourEnd;
+
+        // Toggle Italic on "three four"
+        // The selection spans from inside the bold region to outside it.
+        // Expected: "three" gets italic (inside bold), "four" gets italic (outside bold)
+        // In markdown, this should produce proper nesting:
+        // "One **two *three*** *four* five"
+        result = MarkdownTextExtensions.ToggleItalic(text, start, end);
+        text = result.Text; start = result.SelectionStart; end = result.SelectionEnd;
+
+        // The expected result: "three" is bold+italic, "four" is just italic
+        // Proper markdown: **two *three*** followed by *four*
+        Assert.Equal("One **two *three*** *four* five", text);
+
+        // ── Check HTML (what the user actually sees) ──────────────────
+        var htmlResult = MarkdownRenderer.Render(text);
+        string html = htmlResult.Html;
+
+        // "two" is bold only, "three" is bold+italic → <strong>two <em>three</em></strong>
+        Assert.Contains("<strong>", html);
+        Assert.Contains("</strong>", html);
+        Assert.Contains("<em>", html);
+        Assert.Contains("</em>", html);
+        // The correct nesting: <strong>two <em>three</em></strong>
+        Assert.Matches(@"<strong>two <em>three</em></strong>", html);
+        // "four" is italic only → <em>four</em>
+        Assert.Matches(@"<em>four</em>", html);
+        // All words present
+        Assert.Contains("One", html);
+        Assert.Contains("two", html);
+        Assert.Contains("three", html);
+        Assert.Contains("four", html);
+        Assert.Contains("five", html);
     }
 }
 

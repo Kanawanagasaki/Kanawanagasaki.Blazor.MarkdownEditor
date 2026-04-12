@@ -316,11 +316,32 @@ public static class MarkdownRenderer
                 int closePos = text.IndexOf("**", i + 2);
                 if (closePos > i + 1)
                 {
-                    string inner = text.Substring(i + 2, closePos - i - 2);
+                    // Check if the closing ** is followed by * (making ***).
+                    // If so, and the inner content has an unmatched italic opener,
+                    // treat the *** as closing both italic and bold.
+                    // Example: **two *three*** → bold contains italic "three"
+                    if (closePos + 2 < text.Length && text[closePos + 2] == '*'
+                        && HasUnmatchedItalicOpener(text, i + 2, closePos))
+                    {
+                        // The *** closes both italic inside and bold outside
+                        string inner = text.Substring(i + 2, closePos - i - 2);
+                        // Append the italic closing * to the inner content so
+                        // recursive rendering can match *three* properly
+                        string innerWithItalicClose = inner + "*";
+                        html.Append("<strong>");
+                        var innerResult = RenderInlineWithMapping(innerWithItalicClose, basePos + i + 2);
+                        html.Append(innerResult.Html);
+                        v2s.AddRange(innerResult.VisibleToSource);
+                        html.Append("</strong>");
+                        i = closePos + 3; // skip past ***
+                        continue;
+                    }
+
+                    string innerText = text.Substring(i + 2, closePos - i - 2);
                     html.Append("<strong>");
-                    var innerResult = RenderInlineWithMapping(inner, basePos + i + 2);
-                    html.Append(innerResult.Html);
-                    v2s.AddRange(innerResult.VisibleToSource);
+                    var innerResult2 = RenderInlineWithMapping(innerText, basePos + i + 2);
+                    html.Append(innerResult2.Html);
+                    v2s.AddRange(innerResult2.VisibleToSource);
                     html.Append("</strong>");
                     i = closePos + 2;
                     continue;
@@ -468,6 +489,60 @@ public static class MarkdownRenderer
     }
 
     // ── HTML helpers ───────────────────────────────────────────
+
+    /// <summary>
+    /// Checks whether the substring text[start..end] contains an unmatched
+    /// italic opener (<c>*</c> not part of <c>**</c> or <c>***</c>) that
+    /// does not have a corresponding closing <c>*</c> within the same range.
+    /// Used by the bold handler to detect cases like
+    /// <c>**two *three***</c> where the trailing <c>***</c> closes both
+    /// the inner italic and the outer bold.
+    /// </summary>
+    private static bool HasUnmatchedItalicOpener(string text, int start, int end)
+    {
+        int italicDepth = 0;
+        int j = start;
+        while (j < end)
+        {
+            if (text[j] == '*')
+            {
+                // Count consecutive asterisks
+                int runStart = j;
+                while (j < end && text[j] == '*')
+                    j++;
+
+                int runLen = j - runStart;
+
+                if (runLen >= 3)
+                {
+                    // *** or more: treat as bold+italic open/close pair(s)
+                    // Each *** is a complete bold+italic open→close pair,
+                    // so it doesn't contribute unmatched italic openers.
+                    continue;
+                }
+
+                if (runLen == 2)
+                {
+                    // ** is a bold open/close — no italic contribution
+                    // Skip past its potential closing
+                    int closePos = text.IndexOf("**", j);
+                    if (closePos > j && closePos < end)
+                        j = closePos + 2;
+                    continue;
+                }
+
+                // runLen == 1: single * — toggle italic depth
+                italicDepth++;
+            }
+            else
+            {
+                j++;
+            }
+        }
+
+        // If italic depth is odd, there's an unmatched italic opener
+        return italicDepth % 2 == 1;
+    }
 
     private static string EscapeHtml(string s)
     {

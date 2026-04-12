@@ -100,6 +100,36 @@ public static class MarkdownTextExtensions
         // suffix is after `end`.
         var (detectedStyles, prefixLen, suffixLen) = CollectInlineStyles(text, start, end);
 
+        // ── If no markers found, check if selection is within a marker region on its line ──
+        // This handles the case where the user selects text inside an already-marked
+        // line (e.g. selecting "five" inside ~~***`four five six`***~~).
+        // If so, expand the effective selection to the full content area of the markers.
+        if (detectedStyles == InlineStyle.None)
+        {
+            var expanded = TryExpandToMarkerRegion(text, start, end);
+            if (expanded != null)
+            {
+                start = expanded.Value.effectiveStart;
+                end = expanded.Value.effectiveEnd;
+                detectedStyles = expanded.Value.styles;
+                prefixLen = expanded.Value.prefixLen;
+                suffixLen = expanded.Value.suffixLen;
+            }
+        }
+
+        // ── If still no markers, check for overlapping markers ───────────────
+        // Handles two cases:
+        // 1. Selection CONTAINS markers (e.g. selecting entire line that has
+        //    markers in the middle like "One ~~***`two`***~~ three")
+        // 2. Selection CROSSES marker boundaries (e.g. selecting text that
+        //    starts inside a marker region and ends outside it)
+        if (detectedStyles == InlineStyle.None)
+        {
+            var overlapResult = TryResolveOverlappingMarkers(text, start, end, styleToToggle);
+            if (overlapResult != null)
+                return overlapResult.Value;
+        }
+
         // ── Toggle the requested style ───────────────────────────
         InlineStyle newStyles = detectedStyles ^ styleToToggle;
 
@@ -359,6 +389,443 @@ public static class MarkdownTextExtensions
             Text = newText,
             SelectionStart = start,
             SelectionEnd = start + rebuilt.Length,
+        };
+    }
+
+    /// <summary>
+    /// When a single-line selection falls within a marker region on its line
+    /// (but does not start immediately after the opening markers), detect
+    /// the surrounding markers and expand the effective selection to cover
+    /// the full content area within those markers.
+    /// Also handles when the selection INCLUDES the full marker region
+    /// (selection starts before the opening markers and ends after the
+    /// closing markers).
+    /// Returns null if the selection is not within or containing a marker region.
+    /// </summary>
+    private static (int effectiveStart, int effectiveEnd, InlineStyle styles, int prefixLen, int suffixLen)?
+        TryExpandToMarkerRegion(string text, int start, int end)
+    {
+        // Find the line boundaries containing the selection
+        int lineStart = start > 0
+            ? text.LastIndexOf('\n', start - 1) + 1
+            : 0;
+        int lineEnd = text.IndexOf('\n', end);
+        if (lineEnd < 0) lineEnd = text.Length;
+
+        string line = text.Substring(lineStart, lineEnd - lineStart);
+
+        // Collect markers on this line
+        var (styles, prefixLen, suffixLen) = CollectInlineStylesOnLine(line);
+
+        if (styles == InlineStyle.None)
+            return null;
+
+        // Check if the selection falls within the content area
+        int contentStart = lineStart + prefixLen;
+        int contentEnd = lineEnd - suffixLen;
+
+        if (start >= contentStart && end <= contentEnd)
+        {
+            return (contentStart, contentEnd, styles, prefixLen, suffixLen);
+        }
+
+        // Also handle when the selection INCLUDES the full marker region
+        // (selection starts at or before the opening markers and ends at or
+        // after the closing markers). In this case, the effective selection
+        // is the content area, and we expand to include the markers as
+        // prefix/suffix.
+        if (start <= lineStart + prefixLen && end >= lineEnd - suffixLen
+            && start < end) // ensure valid selection
+        {
+            return (contentStart, contentEnd, styles, prefixLen, suffixLen);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Try to parse a complete marker region starting from a given position
+    /// in a line. Scans for opening markers, then searches forward for the
+    /// matching closing markers. Returns the styles, content range, and
+    /// full region range within the line, or null if no valid region found.
+    /// </summary>
+    private static (InlineStyle styles, int contentStart, int contentEnd, int regionStart, int regionEnd)?
+        TryParseMarkerRegion(string line, int openPos)
+    {
+        InlineStyle styles = InlineStyle.None;
+        int pos = openPos;
+
+        // Parse opening markers starting at openPos
+        while (pos < line.Length)
+        {
+            bool found = false;
+
+            // Check *** (bold+italic combined) — must check before ** or *
+            if ((styles & (InlineStyle.Bold | InlineStyle.Italic)) == 0
+                && pos + 3 <= line.Length && line.Substring(pos, 3) == "***")
+            {
+                styles |= InlineStyle.Bold | InlineStyle.Italic;
+                pos += 3;
+                found = true;
+            }
+
+            // Check ** (bold) — must check before *
+            if (!found && (styles & InlineStyle.Bold) == 0
+                && pos + 2 <= line.Length && line.Substring(pos, 2) == "**")
+            {
+                styles |= InlineStyle.Bold;
+                pos += 2;
+                found = true;
+            }
+
+            // Check * (italic, standalone, not part of **)
+            if (!found && (styles & InlineStyle.Italic) == 0
+                && pos + 1 <= line.Length && line[pos] == '*')
+            {
+                bool isPartOfDoubleStar = (pos + 2 <= line.Length && line[pos + 1] == '*');
+                if (!isPartOfDoubleStar)
+                {
+                    styles |= InlineStyle.Italic;
+                    pos += 1;
+                    found = true;
+                }
+            }
+
+            // Check ~~ (strikethrough)
+            if (!found && (styles & InlineStyle.Strikethrough) == 0
+                && pos + 2 <= line.Length && line.Substring(pos, 2) == "~~")
+            {
+                styles |= InlineStyle.Strikethrough;
+                pos += 2;
+                found = true;
+            }
+
+            // Check ` (inline code — innermost marker)
+            if (!found && (styles & InlineStyle.InlineCode) == 0
+                && pos + 1 <= line.Length && line[pos] == '`')
+            {
+                styles |= InlineStyle.InlineCode;
+                pos += 1;
+                found = true;
+            }
+
+            if (!found) break;
+        }
+
+        if (styles == InlineStyle.None)
+            return null;
+
+        int contentStart = pos;
+
+        // Search for matching closing markers after the content
+        string expectedSuffix = BuildMarkerSuffix(styles);
+        int suffixPos = line.IndexOf(expectedSuffix, contentStart);
+        if (suffixPos < 0)
+            return null;
+
+        int contentEnd = suffixPos;
+        int regionEnd = suffixPos + expectedSuffix.Length;
+
+        return (styles, contentStart, contentEnd, openPos, regionEnd);
+    }
+
+    /// <summary>
+    /// Handles two overlapping marker cases that the normal detection
+    /// logic (CollectInlineStyles / TryExpandToMarkerRegion) cannot resolve:
+    ///
+    /// Case 1 — Selection CONTAINS markers:
+    ///   The selected text has markers in the middle (not wrapping the
+    ///   selection). Example: selecting "One ~~***`two`***~~ three" and
+    ///   toggling bold. The markers are inside the selection and would get
+    ///   doubled without special handling. We strip the markers, produce
+    ///   clean content, and apply the toggle.
+    ///
+    /// Case 2 — Selection CROSSES marker boundaries:
+    ///   The selection starts inside a marker region and ends outside it
+    ///   (or vice versa). Example: selecting "three four" in
+    ///   "One **two three** four five". We split at the boundary and
+    ///   reconstruct.
+    ///
+    /// Returns the final TextEditResult, or null if no overlapping markers
+    /// are found.
+    /// </summary>
+    private static TextEditResult? TryResolveOverlappingMarkers(
+        string text, int start, int end, InlineStyle styleToToggle)
+    {
+        // Find the line boundaries containing the selection
+        int lineStart = start > 0
+            ? text.LastIndexOf('\n', start - 1) + 1
+            : 0;
+        int lineEnd = text.IndexOf('\n', end);
+        if (lineEnd < 0) lineEnd = text.Length;
+
+        string line = text.Substring(lineStart, lineEnd - lineStart);
+
+        // Convert selection to line-relative positions
+        int selStart = start - lineStart;
+        int selEnd = end - lineStart;
+
+        // Scan the line for marker regions starting at each position
+        for (int i = 0; i < line.Length; i++)
+        {
+            // Quick check: is this position a potential marker start?
+            char c = line[i];
+            if (c != '~' && c != '*' && c != '`')
+                continue;
+
+            var region = TryParseMarkerRegion(line, i);
+            if (region == null) continue;
+
+            var (styles, contentStart, contentEnd, regionStart, regionEnd) = region.Value;
+
+            // ── Case 1: Selection fully CONTAINS the marker region ────
+            if (selStart <= regionStart && selEnd >= regionEnd)
+            {
+                // Strip the markers from the selected text to get clean content
+                string beforeRegion = line.Substring(0, regionStart);
+                string regionContent = line.Substring(contentStart, contentEnd - contentStart);
+                string afterRegion = line.Substring(regionEnd);
+                string cleanContent = beforeRegion + regionContent + afterRegion;
+
+                // Apply the toggle: since the markers were inside the selection
+                // (not wrapping it), the selection has no "wrapping" styles.
+                // We just apply the toggled style to the clean content.
+                InlineStyle newStyles = styleToToggle;
+                string newPrefix = BuildMarkerPrefix(newStyles);
+                string newSuffix = BuildMarkerSuffix(newStyles);
+
+                string newText = text.Substring(0, lineStart)
+                               + newPrefix + cleanContent + newSuffix
+                               + text.Substring(lineEnd);
+
+                int newSelStart = lineStart + newPrefix.Length;
+                int newSelEnd = newSelStart + cleanContent.Length;
+
+                return new TextEditResult
+                {
+                    Text = newText,
+                    SelectionStart = newSelStart,
+                    SelectionEnd = newSelEnd,
+                };
+            }
+
+            // ── Case 2: Selection CROSSES the marker boundary ─────────
+            // Selection starts inside the region content and ends outside
+            if (selStart >= contentStart && selStart <= contentEnd && selEnd > regionEnd)
+            {
+                return ResolveCrossingBoundaryForward(
+                    text, lineStart, lineEnd, line,
+                    selStart, selEnd,
+                    styles, contentStart, contentEnd, regionStart, regionEnd,
+                    styleToToggle);
+            }
+
+            // Selection starts outside the region and ends inside the content
+            if (selStart < regionStart && selEnd >= contentStart && selEnd <= contentEnd)
+            {
+                return ResolveCrossingBoundaryBackward(
+                    text, lineStart, lineEnd, line,
+                    selStart, selEnd,
+                    styles, contentStart, contentEnd, regionStart, regionEnd,
+                    styleToToggle);
+            }
+
+            // Skip past this region to avoid re-scanning inside it
+            i = regionEnd - 1;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Handles the crossing-boundary case where the selection starts inside
+    /// a marker region and ends outside it.
+    ///
+    /// Example: "One **two three** four five" with selection covering
+    /// "three** four" → toggling italic should produce
+    /// "One **two *three*** *four* five".
+    /// </summary>
+    private static TextEditResult ResolveCrossingBoundaryForward(
+        string text, int lineStart, int lineEnd, string line,
+        int selStart, int selEnd,
+        InlineStyle regionStyles, int contentStart, int contentEnd,
+        int regionStart, int regionEnd,
+        InlineStyle styleToToggle)
+    {
+        // Content before the selection (inside the region)
+        string beforeSelInRegion = line.Substring(contentStart, selStart - contentStart);
+        // Content of the selection inside the region
+        string selInRegion = line.Substring(selStart, contentEnd - selStart);
+        // Text between the region end and the selection end (outside the region)
+        string selOutRegion = line.Substring(regionEnd, selEnd - regionEnd);
+        // Text after the selection
+        string afterSel = line.Substring(selEnd);
+        // Text before the region
+        string beforeRegion = line.Substring(0, regionStart);
+        // The opening markers of the region
+        string regionOpening = line.Substring(regionStart, contentStart - regionStart);
+
+        // Inside part: add the new style to the existing region styles
+        InlineStyle insideStyles = regionStyles | styleToToggle;
+        string insidePrefix = BuildMarkerPrefix(insideStyles);
+        string insideSuffix = BuildMarkerSuffix(insideStyles);
+
+        // Outside part: apply the toggled style only
+        // Trim leading/trailing whitespace from the outside content so
+        // that spaces adjacent to marker boundaries are not wrapped.
+        string outsideContent = selOutRegion;
+        string leadingWs = "";
+        string trailingWs = "";
+        int wsTrimStart = 0;
+        while (wsTrimStart < outsideContent.Length && char.IsWhiteSpace(outsideContent[wsTrimStart]))
+            wsTrimStart++;
+        if (wsTrimStart > 0)
+        {
+            leadingWs = outsideContent.Substring(0, wsTrimStart);
+            outsideContent = outsideContent.Substring(wsTrimStart);
+        }
+        int wsTrimEnd = outsideContent.Length;
+        while (wsTrimEnd > 0 && char.IsWhiteSpace(outsideContent[wsTrimEnd - 1]))
+            wsTrimEnd--;
+        if (wsTrimEnd < outsideContent.Length)
+        {
+            trailingWs = outsideContent.Substring(wsTrimEnd);
+            outsideContent = outsideContent.Substring(0, wsTrimEnd);
+        }
+
+        string outsidePrefix = BuildMarkerPrefix(styleToToggle);
+        string outsideSuffix = BuildMarkerSuffix(styleToToggle);
+
+        // Reconstruct the line:
+        // [before region] [region opening for "before selection" part]
+        // [before selection in region]
+        // [new style opening inside region] [selection inside region]
+        // [combined closing for inside part]
+        // [text between region end and outside content] [outside markers + content]
+        // [after selection]
+        string newLine = beforeRegion
+            + regionOpening
+            + beforeSelInRegion
+            + BuildMarkerPrefix(styleToToggle)  // open new style within existing region
+            + selInRegion
+            + insideSuffix   // close both region styles and new style
+            + leadingWs
+            + (outsideContent.Length > 0
+                ? outsidePrefix + outsideContent + outsideSuffix
+                : "")
+            + trailingWs
+            + afterSel;
+
+        string newText = text.Substring(0, lineStart) + newLine + text.Substring(lineEnd);
+
+        // Compute selection: cover the reconstructed content
+        int selContentStart = lineStart + beforeRegion.Length + regionOpening.Length
+                            + beforeSelInRegion.Length + BuildMarkerPrefix(styleToToggle).Length;
+        int selContentEnd = selContentStart + selInRegion.Length
+                          + insideSuffix.Length + leadingWs.Length
+                          + (outsideContent.Length > 0
+                              ? outsidePrefix.Length + outsideContent.Length + outsideSuffix.Length
+                              : 0)
+                          + trailingWs.Length;
+
+        return new TextEditResult
+        {
+            Text = newText,
+            SelectionStart = selContentStart,
+            SelectionEnd = selContentEnd,
+        };
+    }
+
+    /// <summary>
+    /// Handles the crossing-boundary case where the selection starts outside
+    /// a marker region and ends inside it (mirror of the forward case).
+    /// </summary>
+    private static TextEditResult ResolveCrossingBoundaryBackward(
+        string text, int lineStart, int lineEnd, string line,
+        int selStart, int selEnd,
+        InlineStyle regionStyles, int contentStart, int contentEnd,
+        int regionStart, int regionEnd,
+        InlineStyle styleToToggle)
+    {
+        // Text before the selection
+        string beforeSel = line.Substring(0, selStart);
+        // Text of the selection before the region
+        string selBeforeRegion = line.Substring(selStart, regionStart - selStart);
+        // Content of the selection inside the region (from content start to selEnd)
+        string selInRegion = line.Substring(contentStart, selEnd - contentStart);
+        // Content after the selection (inside the region)
+        string afterSelInRegion = line.Substring(selEnd, contentEnd - selEnd);
+        // The closing markers of the region
+        string regionClosing = line.Substring(contentEnd, regionEnd - contentEnd);
+        // Text after the region
+        string afterRegion = line.Substring(regionEnd);
+
+        // Outside part: apply the toggled style
+        // Trim whitespace from edges
+        string outsideContent = selBeforeRegion;
+        string leadingWs = "";
+        string trailingWs = "";
+        int wsTrimStart = 0;
+        while (wsTrimStart < outsideContent.Length && char.IsWhiteSpace(outsideContent[wsTrimStart]))
+            wsTrimStart++;
+        if (wsTrimStart > 0)
+        {
+            leadingWs = outsideContent.Substring(0, wsTrimStart);
+            outsideContent = outsideContent.Substring(wsTrimStart);
+        }
+        int wsTrimEnd = outsideContent.Length;
+        while (wsTrimEnd > 0 && char.IsWhiteSpace(outsideContent[wsTrimEnd - 1]))
+            wsTrimEnd--;
+        if (wsTrimEnd < outsideContent.Length)
+        {
+            trailingWs = outsideContent.Substring(wsTrimEnd);
+            outsideContent = outsideContent.Substring(0, wsTrimEnd);
+        }
+
+        string outsidePrefix = BuildMarkerPrefix(styleToToggle);
+        string outsideSuffix = BuildMarkerSuffix(styleToToggle);
+
+        // Inside part: add the new style to the existing region styles
+        InlineStyle insideStyles = regionStyles | styleToToggle;
+        string insidePrefix = BuildMarkerPrefix(insideStyles);
+        string insideSuffix = BuildMarkerSuffix(insideStyles);
+
+        // Reconstruct the line:
+        // [before selection] [outside content with markers] [trailing ws]
+        // [new style opening inside region] [selection inside region]
+        // [after selection in region with original markers]
+        // [after region]
+        string newLine = beforeSel
+            + leadingWs
+            + (outsideContent.Length > 0
+                ? outsidePrefix + outsideContent + outsideSuffix
+                : "")
+            + trailingWs
+            + insidePrefix    // open combined styles inside region
+            + selInRegion
+            + BuildMarkerSuffix(styleToToggle)  // close new style within region
+            + afterSelInRegion
+            + regionClosing
+            + afterRegion;
+
+        string newText = text.Substring(0, lineStart) + newLine + text.Substring(lineEnd);
+
+        // Compute selection
+        int selContentStart = lineStart + beforeSel.Length + leadingWs.Length
+                            + (outsideContent.Length > 0
+                                ? outsidePrefix.Length + outsideContent.Length + outsideSuffix.Length
+                                : 0)
+                            + trailingWs.Length
+                            + insidePrefix.Length;
+        int selContentEnd = selContentStart + selInRegion.Length
+                          + BuildMarkerSuffix(styleToToggle).Length
+                          + afterSelInRegion.Length + regionClosing.Length;
+
+        return new TextEditResult
+        {
+            Text = newText,
+            SelectionStart = selContentStart,
+            SelectionEnd = selContentEnd,
         };
     }
 

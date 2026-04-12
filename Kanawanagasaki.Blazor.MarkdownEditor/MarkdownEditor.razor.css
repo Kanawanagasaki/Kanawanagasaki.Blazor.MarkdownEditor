@@ -213,6 +213,23 @@
     transition: none;
 }
 
+/* ── custom selection highlight ──────────────────────────────── */
+
+::deep .md-selection-container {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+::deep .md-selection-line {
+    position: absolute;
+    background-color: rgba(59, 130, 246, 0.3);
+    pointer-events: none;
+    border-radius: 1px;
+}
+
 /* ── block-level rendered elements ──────────────────────────── */
 
 ::deep .md-line {

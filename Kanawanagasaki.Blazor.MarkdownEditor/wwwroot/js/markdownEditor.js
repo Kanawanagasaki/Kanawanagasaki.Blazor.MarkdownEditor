@@ -16,12 +16,13 @@
 const _instances = new Map();
 
 class EditorInstance {
-    constructor(id, editorBody, textarea, overlay, cursorEl) {
+    constructor(id, editorBody, textarea, overlay, cursorEl, selectionContainer) {
         this.id = id;
         this.editorBody = editorBody;
         this.textarea = textarea;
         this.overlay = overlay;
         this.cursorEl = cursorEl;
+        this.selectionContainer = selectionContainer;
         this.blinkTimer = null;
         this.visible = true;
         this.lineHeight = 0;
@@ -114,6 +115,7 @@ function syncTextareaSelectionToOverlay(inst) {
         // No range selection — clear any native selection
         const sel = window.getSelection();
         if (sel) sel.removeAllRanges();
+        updateSelectionHighlight(inst);
         return;
     }
 
@@ -156,6 +158,121 @@ function syncTextareaSelectionToOverlay(inst) {
         }
     } catch {
         // ignore Range errors (e.g. detached nodes during re-render)
+    }
+
+    // Update custom selection highlight divs
+    updateSelectionHighlight(inst);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Custom selection highlight: div-based overlay for selection visuals
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Merge DOMRects that are on the same visual line (overlapping y-ranges).
+ * This prevents duplicate/overlapping highlight divs when a single line
+ * has multiple inline elements (e.g. <strong>, <em>) that produce
+ * separate rects from getClientRects().
+ */
+function mergeSelectionRects(domRectList) {
+    const valid = [];
+    for (let i = 0; i < domRectList.length; i++) {
+        const r = domRectList[i];
+        if (r.width > 0 && r.height > 0) {
+            valid.push({
+                top: r.top,
+                left: r.left,
+                right: r.right,
+                bottom: r.bottom
+            });
+        }
+    }
+
+    if (valid.length === 0) return [];
+
+    // Sort by top, then by left
+    valid.sort((a, b) => a.top - b.top || a.left - b.left);
+
+    // Merge rects with overlapping y-ranges (1px tolerance)
+    const merged = [{ ...valid[0] }];
+    for (let i = 1; i < valid.length; i++) {
+        const prev = merged[merged.length - 1];
+        const curr = valid[i];
+
+        if (curr.top < prev.bottom + 1) {
+            // Same visual line — merge
+            prev.left = Math.min(prev.left, curr.left);
+            prev.right = Math.max(prev.right, curr.right);
+            prev.top = Math.min(prev.top, curr.top);
+            prev.bottom = Math.max(prev.bottom, curr.bottom);
+        } else {
+            merged.push({ ...curr });
+        }
+    }
+
+    // Compute width/height for merged rects
+    for (const r of merged) {
+        r.width = r.right - r.left;
+        r.height = r.bottom - r.top;
+    }
+
+    return merged;
+}
+
+/**
+ * Read the native browser Selection on the overlay and create/update
+ * absolutely positioned highlight divs inside the selection container.
+ * The native selection is kept functional (for copy/paste etc.) but
+ * visually hidden via CSS ::selection { background: transparent }.
+ */
+function updateSelectionHighlight(inst) {
+    const container = inst.selectionContainer;
+    if (!container) return;
+
+    const sel = window.getSelection();
+
+    // If no selection or collapsed, clear highlights
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+        container.innerHTML = '';
+        return;
+    }
+
+    const range = sel.getRangeAt(0);
+
+    // Make sure selection is within the overlay
+    if (!inst.overlay.contains(range.commonAncestorContainer)) {
+        container.innerHTML = '';
+        return;
+    }
+
+    // Get all client rects for the selection and merge same-line rects
+    const rects = mergeSelectionRects(range.getClientRects());
+
+    if (rects.length === 0) {
+        container.innerHTML = '';
+        return;
+    }
+
+    // Get the editor body rect for relative positioning
+    const bodyRect = inst.editorBody.getBoundingClientRect();
+
+    // Reuse or create highlight divs (pool approach to minimise DOM churn)
+    while (container.children.length > rects.length) {
+        container.removeChild(container.lastChild);
+    }
+    while (container.children.length < rects.length) {
+        const div = document.createElement('div');
+        div.className = 'md-selection-line';
+        container.appendChild(div);
+    }
+
+    for (let i = 0; i < rects.length; i++) {
+        const rect = rects[i];
+        const div = container.children[i];
+        div.style.top = (rect.top - bodyRect.top) + 'px';
+        div.style.left = (rect.left - bodyRect.left) + 'px';
+        div.style.width = rect.width + 'px';
+        div.style.height = rect.height + 'px';
     }
 }
 
@@ -454,13 +571,27 @@ function handleOverlayWheel(inst, e) {
 //  Public API (called from Blazor)
 // ═══════════════════════════════════════════════════════════════════
 
-export function initEditor(id, editorBody, textarea, overlay, cursorEl) {
-    const inst = new EditorInstance(id, editorBody, textarea, overlay, cursorEl);
+export function initEditor(id, editorBody, textarea, overlay, cursorEl, selectionContainer) {
+    const inst = new EditorInstance(id, editorBody, textarea, overlay, cursorEl, selectionContainer);
     _instances.set(id, inst);
     window.__mdEditorInstances = _instances;
 
     const cs = getComputedStyle(textarea);
     inst.lineHeight = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5;
+
+    // Inject CSS to hide native ::selection highlight on the overlay.
+    // This is done via JS (rather than scoped CSS alone) because
+    // ::selection is a pseudo-element that some Blazor CSS isolation
+    // implementations do not forward reliably to child content.
+    if (!document.getElementById('md-overlay-selection-style')) {
+        const style = document.createElement('style');
+        style.id = 'md-overlay-selection-style';
+        style.textContent =
+            '.md-overlay::selection, .md-overlay *::selection {' +
+            '  background-color: transparent;' +
+            '}';
+        document.head.appendChild(style);
+    }
 
     // ── textarea event handlers ──────────────────────────────
 
@@ -499,6 +630,8 @@ export function initEditor(id, editorBody, textarea, overlay, cursorEl) {
         // Clear native overlay selection on blur
         const sel = window.getSelection();
         if (sel) sel.removeAllRanges();
+        // Clear custom highlight divs
+        updateSelectionHighlight(inst);
     };
 
     const onTextareaScroll = () => {

@@ -128,6 +128,9 @@
         @* Overlay: visual layer, captures clicks and wheel events *@
         <div class="md-overlay" @ref="_overlay">@((MarkupString)_renderedHtml)</div>
 
+        @* Custom selection highlight: div-based overlay replacing native ::selection *@
+        <div class="md-selection-container" @ref="_selectionContainer"></div>
+
         @* Simulated cursor: positioned by JS on top of everything *@
         <div class="md-cursor" @ref="_cursor"></div>
     </div>

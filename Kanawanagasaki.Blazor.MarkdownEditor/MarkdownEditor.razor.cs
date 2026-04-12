@@ -23,6 +23,7 @@ public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
     protected ElementReference _textarea;
     protected ElementReference _overlay;
     protected ElementReference _cursor;
+    protected ElementReference _selectionContainer;
 
     // ── parameters ─────────────────────────────────────────────
 
@@ -86,7 +87,7 @@ public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
                 "./_content/Kanawanagasaki.Blazor.MarkdownEditor/js/markdownEditor.js");
 
             await _jsModule.InvokeVoidAsync("initEditor",
-                _instanceId, _editorBody, _textarea, _overlay, _cursor);
+                _instanceId, _editorBody, _textarea, _overlay, _cursor, _selectionContainer);
 
             await _jsModule.InvokeVoidAsync("setDotNetRef", _instanceId, _dotNetRef);
             await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _value);

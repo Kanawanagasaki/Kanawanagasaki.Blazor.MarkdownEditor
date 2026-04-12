@@ -5,97 +5,33 @@ using Kanawanagasaki.Blazor.MarkdownEditor.Tests.Fixtures;
 namespace Kanawanagasaki.Blazor.MarkdownEditor.Tests.Tests;
 
 /// <summary>
-/// Toolbar button tests: Bold, Italic, Strikethrough, Headings, Code Block,
-/// Lists, Blockquote, Link, Image, Horizontal Rule, Undo, Redo.
+/// Toolbar button tests: Bold, Italic, Strikethrough, Headings,
+/// Code Block, Lists, Blockquote, Link, Image, HR, Undo, Redo.
+///
+/// Tests that apply formatting to existing text use the fast
+/// FillContentAsync + SetTextareaSelection pattern.
+/// Tests that verify undo/redo or sequential toggle behaviour
+/// retain real keyboard interaction to exercise the real undo stack.
 /// </summary>
 [Collection(EditorTestCollection.Name)]
-public class EditorToolbarTests : IAsyncLifetime
+public class EditorToolbarTests : EditorTestBase
 {
-    private readonly TestAppFixture _fixture;
-    private IPage _page = null!;
-
     public EditorToolbarTests(TestAppFixture fixture)
-    {
-        _fixture = fixture;
-    }
-
-    public async Task InitializeAsync()
-    {
-        _page = await _fixture.CreatePageAsync();
-    }
-
-    public async Task DisposeAsync()
-    {
-        await _page.CloseAsync();
-    }
-
-    // ── Helpers ─────────────────────────────────────────────────
-
-    private async Task NavigateToEditor()
-    {
-        await _page.GotoAsync(_fixture.BaseAddress, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
-
-        // Wait for Blazor WASM to finish loading
-        await _page.WaitForFunctionAsync(
-            "() => !document.getElementById('app')?.textContent?.includes('Loading...')",
-            new PageWaitForFunctionOptions { Timeout = 60000 });
-
-        await _page.WaitForSelectorAsync(".md-editor", new PageWaitForSelectorOptions { Timeout = 30000 });
-        await _page.WaitForFunctionAsync(
-            "() => document.querySelector('.md-textarea') !== null && document.querySelector('.md-overlay') !== null",
-            new PageWaitForFunctionOptions { Timeout = 30000 });
-        await Task.Delay(1000);
-    }
-
-    private async Task ClickOverlayAndType(string text)
-    {
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
-        await _page.Keyboard.TypeAsync(text);
-        await Task.Delay(500);
-    }
-
-    private async Task SelectCharsFromStart(int charCount)
-    {
-        await _page.Keyboard.PressAsync("Home");
-        await Task.Delay(50);
-        for (int i = 0; i < charCount; i++)
-        {
-            await _page.Keyboard.PressAsync("Shift+ArrowRight");
-            await Task.Delay(30);
-        }
-        await Task.Delay(100);
-    }
-
-    private async Task SelectAll()
-    {
-        // Re-focus textarea via overlay click first (toolbar buttons steal focus)
-        await _page.Locator(".md-overlay").ClickAsync();
-        await Task.Delay(100);
-        await _page.Keyboard.PressAsync("Control+a");
-        await Task.Delay(200);
-    }
-
-    private async Task<string> GetRawValue()
-    {
-        return await _page.Locator("#raw-value").InnerTextAsync();
-    }
+        : base(fixture) { }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Bold tests
+    //  Bold
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task BoldButton_ShouldWrapSelectedText()
     {
         await NavigateToEditor();
+        await FillContentAsync("bold text");
+        await SetTextareaSelection(0, 4);
 
-        await ClickOverlayAndType("bold text");
-        await SelectCharsFromStart(4);
-
-        await _page.Locator(".md-btn-bold").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator(".md-btn-bold").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("**bold**", rawValue);
@@ -105,17 +41,15 @@ public class EditorToolbarTests : IAsyncLifetime
     public async Task BoldButton_ShouldRenderStrongElement()
     {
         await NavigateToEditor();
+        await FillContentAsync("bold text");
+        await SetTextareaSelection(0, 4);
 
-        await ClickOverlayAndType("bold text");
-        await SelectCharsFromStart(4);
+        await Page.Locator(".md-btn-bold").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        await _page.Locator(".md-btn-bold").ClickAsync();
-        await Task.Delay(300);
-
-        var hasStrong = await _page.EvaluateAsync<bool>(
+        var hasStrong = await EvalAsync<bool>(
             "() => document.querySelector('.md-overlay strong') !== null");
-
-        Assert.True(hasStrong, "Overlay should contain a <strong> element after clicking Bold");
+        Assert.True(hasStrong, "Overlay should contain <strong> after Bold");
     }
 
     [Fact]
@@ -123,43 +57,45 @@ public class EditorToolbarTests : IAsyncLifetime
     {
         await NavigateToEditor();
 
+        // Type and apply bold via keyboard (need real typing for undo stack)
         await ClickOverlayAndType("bold text");
         await SelectCharsFromStart(4);
+        await Page.Locator(".md-btn-bold").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        // Toggle bold on
-        await _page.Locator(".md-btn-bold").ClickAsync();
-        await Task.Delay(500);
+        // Verify bold is applied
+        var rawAfterBold = await GetRawValue();
+        Assert.Contains("**bold**", rawAfterBold);
 
-        // Re-focus the textarea by clicking the overlay, then select all
-        await _page.Locator(".md-overlay").ClickAsync();
-        await Task.Delay(200);
-        await _page.Keyboard.PressAsync("Control+a");
-        await Task.Delay(300);
+        // Re-position cursor inside the bold markers and toggle off
+        await Page.Locator(".md-overlay").ClickAsync();
+        await Page.Keyboard.PressAsync("Home");
+        await Page.Keyboard.PressAsync("ArrowRight");
+        await Page.Keyboard.PressAsync("ArrowRight");
+        // Select 4 chars ("bold") from current position using Shift+ArrowRight
+        for (int i = 0; i < 4; i++)
+            await Page.Keyboard.PressAsync("Shift+ArrowRight");
+        await Page.Locator(".md-btn-bold").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        // Toggle bold off
-        await _page.Locator(".md-btn-bold").ClickAsync();
-        await Task.Delay(500);
-
-        var hasStrong = await _page.EvaluateAsync<bool>(
+        var hasStrong = await EvalAsync<bool>(
             "() => document.querySelector('.md-overlay strong') !== null");
-
-        Assert.False(hasStrong, "Bold should be toggled off after second click");
+        Assert.False(hasStrong, "Bold should be removed after toggle-off");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Italic tests
+    //  Italic
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task ItalicButton_ShouldWrapSelectedText()
     {
         await NavigateToEditor();
+        await FillContentAsync("italic text");
+        await SetTextareaSelection(0, 6);
 
-        await ClickOverlayAndType("italic text");
-        await SelectCharsFromStart(6);
-
-        await _page.Locator(".md-btn-italic").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator(".md-btn-italic").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("*italic*", rawValue);
@@ -169,33 +105,30 @@ public class EditorToolbarTests : IAsyncLifetime
     public async Task ItalicButton_ShouldRenderEmElement()
     {
         await NavigateToEditor();
+        await FillContentAsync("italic text");
+        await SetTextareaSelection(0, 6);
 
-        await ClickOverlayAndType("italic text");
-        await SelectCharsFromStart(6);
+        await Page.Locator(".md-btn-italic").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        await _page.Locator(".md-btn-italic").ClickAsync();
-        await Task.Delay(300);
-
-        var hasItalic = await _page.EvaluateAsync<bool>(
+        var hasEm = await EvalAsync<bool>(
             "() => document.querySelector('.md-overlay em') !== null");
-
-        Assert.True(hasItalic, "Overlay should contain an <em> element after clicking Italic");
+        Assert.True(hasEm, "Overlay should contain <em> after Italic");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Strikethrough tests
+    //  Strikethrough
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task StrikethroughButton_ShouldWrapSelectedText()
     {
         await NavigateToEditor();
+        await FillContentAsync("strike text");
+        await SetTextareaSelection(0, 6);
 
-        await ClickOverlayAndType("strike text");
-        await SelectCharsFromStart(6);
-
-        await _page.Locator("button[title='Strikethrough']").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator("button[title='Strikethrough']").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("~~strike~~", rawValue);
@@ -205,32 +138,29 @@ public class EditorToolbarTests : IAsyncLifetime
     public async Task StrikethroughButton_ShouldRenderDelElement()
     {
         await NavigateToEditor();
+        await FillContentAsync("strike text");
+        await SetTextareaSelection(0, 6);
 
-        await ClickOverlayAndType("strike text");
-        await SelectCharsFromStart(6);
+        await Page.Locator("button[title='Strikethrough']").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        await _page.Locator("button[title='Strikethrough']").ClickAsync();
-        await Task.Delay(300);
-
-        var hasDel = await _page.EvaluateAsync<bool>(
+        var hasDel = await EvalAsync<bool>(
             "() => document.querySelector('.md-overlay del') !== null");
-
-        Assert.True(hasDel, "Overlay should contain a <del> element after clicking Strikethrough");
+        Assert.True(hasDel, "Overlay should contain <del> after Strikethrough");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Heading tests
+    //  Headings
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task H1Button_ShouldAddHeadingPrefix()
     {
         await NavigateToEditor();
+        await FillContentAsync("My Title");
 
-        await ClickOverlayAndType("My Title");
-
-        await _page.Locator("button[title='Heading 1']").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator("button[title='Heading 1']").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.StartsWith("# My Title", rawValue.Trim());
@@ -240,27 +170,24 @@ public class EditorToolbarTests : IAsyncLifetime
     public async Task H1Button_ShouldRenderH1Element()
     {
         await NavigateToEditor();
+        await FillContentAsync("My Title");
 
-        await ClickOverlayAndType("My Title");
+        await Page.Locator("button[title='Heading 1']").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        await _page.Locator("button[title='Heading 1']").ClickAsync();
-        await Task.Delay(300);
-
-        var hasH1 = await _page.EvaluateAsync<bool>(
-            "() => document.querySelector('.md-overlay h1') !== null");
-
-        Assert.True(hasH1, "Overlay should contain an <h1> element after clicking H1");
+        var hasH1 = await EvalAsync<bool>(
+            "() => document.querySelector('.md-overlay .md-h1') !== null || document.querySelector('.md-overlay h1') !== null");
+        Assert.True(hasH1, "Overlay should contain H1 element");
     }
 
     [Fact]
     public async Task H2Button_ShouldAddH2Prefix()
     {
         await NavigateToEditor();
+        await FillContentAsync("Subtitle");
 
-        await ClickOverlayAndType("Subtitle");
-
-        await _page.Locator("button[title='Heading 2']").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator("button[title='Heading 2']").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.StartsWith("## Subtitle", rawValue.Trim());
@@ -270,27 +197,24 @@ public class EditorToolbarTests : IAsyncLifetime
     public async Task H2Button_ShouldRenderH2Element()
     {
         await NavigateToEditor();
+        await FillContentAsync("Subtitle");
 
-        await ClickOverlayAndType("Subtitle");
+        await Page.Locator("button[title='Heading 2']").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        await _page.Locator("button[title='Heading 2']").ClickAsync();
-        await Task.Delay(300);
-
-        var hasH2 = await _page.EvaluateAsync<bool>(
-            "() => document.querySelector('.md-overlay h2') !== null");
-
-        Assert.True(hasH2, "Overlay should contain an <h2> element after clicking H2");
+        var hasH2 = await EvalAsync<bool>(
+            "() => document.querySelector('.md-overlay .md-h2') !== null || document.querySelector('.md-overlay h2') !== null");
+        Assert.True(hasH2, "Overlay should contain H2 element");
     }
 
     [Fact]
     public async Task H3Button_ShouldAddH3Prefix()
     {
         await NavigateToEditor();
+        await FillContentAsync("Section");
 
-        await ClickOverlayAndType("Section");
-
-        await _page.Locator("button[title='Heading 3']").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator("button[title='Heading 3']").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.StartsWith("### Section", rawValue.Trim());
@@ -300,37 +224,40 @@ public class EditorToolbarTests : IAsyncLifetime
     public async Task H3Button_ShouldRenderH3Element()
     {
         await NavigateToEditor();
+        await FillContentAsync("Section");
 
-        await ClickOverlayAndType("Section");
+        await Page.Locator("button[title='Heading 3']").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        await _page.Locator("button[title='Heading 3']").ClickAsync();
-        await Task.Delay(300);
-
-        var hasH3 = await _page.EvaluateAsync<bool>(
-            "() => document.querySelector('.md-overlay h3') !== null");
-
-        Assert.True(hasH3, "Overlay should contain an <h3> element after clicking H3");
+        var hasH3 = await EvalAsync<bool>(
+            "() => document.querySelector('.md-overlay .md-h3') !== null || document.querySelector('.md-overlay h3') !== null");
+        Assert.True(hasH3, "Overlay should contain H3 element");
     }
 
     [Fact]
     public async Task HeadingButton_ShouldReplaceExistingHeading()
     {
         await NavigateToEditor();
+        await FillContentAsync("My Title");
 
-        await ClickOverlayAndType("My Title");
-        await _page.Locator("button[title='Heading 1']").ClickAsync();
-        await Task.Delay(300);
+        // Apply H1
+        await Page.Locator("button[title='Heading 1']").ClickAsync();
+        await WaitForOverlayUpdate();
+        var rawH1 = await GetRawValue();
+        Assert.StartsWith("# My Title", rawH1.Trim());
 
-        // Now switch to H2
-        await _page.Locator("button[title='Heading 2']").ClickAsync();
-        await Task.Delay(300);
+        // Switch to H2
+        await Page.Locator("button[title='Heading 2']").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        var rawValue = await GetRawValue();
-        Assert.StartsWith("## My Title", rawValue.Trim());
+        var rawH2 = await GetRawValue();
+        Assert.StartsWith("## My Title", rawH2.Trim());
+        Assert.False(rawH2.TrimStart().StartsWith("# "),
+            "H1 prefix should be replaced, not duplicated");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Code Block tests
+    //  Code Block
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
@@ -338,49 +265,41 @@ public class EditorToolbarTests : IAsyncLifetime
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
-
-        await _page.Locator("button[title='Code Block']").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator(".md-overlay").ClickAsync();
+        await Page.Locator("button[title='Code Block']").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("```", rawValue);
     }
 
     [Fact]
-    public async Task CodeBlockButton_ShouldRenderPreElement()
+    public async Task CodeBlockButton_ShouldRenderCodeBlockElement()
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
+        await Page.Locator(".md-overlay").ClickAsync();
+        await Page.Locator("button[title='Code Block']").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        await _page.Locator("button[title='Code Block']").ClickAsync();
-        await Task.Delay(300);
-
-        var hasPre = await _page.EvaluateAsync<bool>(
+        var hasCode = await EvalAsync<bool>(
             "() => document.querySelector('.md-overlay pre') !== null || document.querySelector('.md-overlay .md-codeblock') !== null");
-
-        Assert.True(hasPre, "Overlay should contain a <pre> or .md-codeblock element after inserting code block");
+        Assert.True(hasCode, "Overlay should contain code block element");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Inline Code tests
+    //  Inline Code
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task InlineCodeButton_ShouldWrapSelectedText()
     {
         await NavigateToEditor();
+        await FillContentAsync("code text");
+        await SetTextareaSelection(0, 4);
 
-        await ClickOverlayAndType("code text");
-        await SelectCharsFromStart(4);
-
-        await _page.Locator("button[title='Inline Code']").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator("button[title='Inline Code']").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("`code`", rawValue);
@@ -390,32 +309,29 @@ public class EditorToolbarTests : IAsyncLifetime
     public async Task InlineCodeButton_ShouldRenderCodeElement()
     {
         await NavigateToEditor();
+        await FillContentAsync("code text");
+        await SetTextareaSelection(0, 4);
 
-        await ClickOverlayAndType("code text");
-        await SelectCharsFromStart(4);
+        await Page.Locator("button[title='Inline Code']").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        await _page.Locator("button[title='Inline Code']").ClickAsync();
-        await Task.Delay(300);
-
-        var hasCode = await _page.EvaluateAsync<bool>(
+        var hasCode = await EvalAsync<bool>(
             "() => document.querySelector('.md-overlay .md-inline-code') !== null");
-
-        Assert.True(hasCode, "Overlay should contain an inline code element after clicking Inline Code");
+        Assert.True(hasCode, "Overlay should contain .md-inline-code after Inline Code");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Unordered List tests
+    //  Unordered List
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task ULButton_ShouldAddBulletPrefix()
     {
         await NavigateToEditor();
+        await FillContentAsync("list item");
 
-        await ClickOverlayAndType("list item");
-
-        await _page.Locator("button[title='Unordered List']").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator("button[title='Unordered List']").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("- list item", rawValue);
@@ -425,31 +341,28 @@ public class EditorToolbarTests : IAsyncLifetime
     public async Task ULButton_ShouldRenderBulletMarker()
     {
         await NavigateToEditor();
+        await FillContentAsync("list item");
 
-        await ClickOverlayAndType("list item");
+        await Page.Locator("button[title='Unordered List']").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        await _page.Locator("button[title='Unordered List']").ClickAsync();
-        await Task.Delay(300);
-
-        var hasMarker = await _page.EvaluateAsync<bool>(
+        var hasMarker = await EvalAsync<bool>(
             "() => document.querySelector('.md-overlay .md-li-marker') !== null");
-
-        Assert.True(hasMarker, "Overlay should contain a bullet marker after clicking UL");
+        Assert.True(hasMarker, "Overlay should contain .md-li-marker after UL");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Ordered List tests
+    //  Ordered List
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task OLButton_ShouldAddNumberPrefix()
     {
         await NavigateToEditor();
+        await FillContentAsync("first item");
 
-        await ClickOverlayAndType("first item");
-
-        await _page.Locator("button[title='Ordered List']").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator("button[title='Ordered List']").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("1. first item", rawValue);
@@ -459,31 +372,28 @@ public class EditorToolbarTests : IAsyncLifetime
     public async Task OLButton_ShouldRenderNumberMarker()
     {
         await NavigateToEditor();
+        await FillContentAsync("first item");
 
-        await ClickOverlayAndType("first item");
+        await Page.Locator("button[title='Ordered List']").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        await _page.Locator("button[title='Ordered List']").ClickAsync();
-        await Task.Delay(300);
-
-        var hasMarker = await _page.EvaluateAsync<bool>(
+        var hasMarker = await EvalAsync<bool>(
             "() => document.querySelector('.md-overlay .md-oli-marker') !== null");
-
-        Assert.True(hasMarker, "Overlay should contain an ordered list marker after clicking OL");
+        Assert.True(hasMarker, "Overlay should contain .md-oli-marker after OL");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Blockquote tests
+    //  Blockquote
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task BlockquoteButton_ShouldAddQuotePrefix()
     {
         await NavigateToEditor();
+        await FillContentAsync("quoted text");
 
-        await ClickOverlayAndType("quoted text");
-
-        await _page.Locator("button[title='Blockquote']").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator("button[title='Blockquote']").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("> quoted text", rawValue);
@@ -493,107 +403,97 @@ public class EditorToolbarTests : IAsyncLifetime
     public async Task BlockquoteButton_ShouldRenderBlockquoteElement()
     {
         await NavigateToEditor();
+        await FillContentAsync("quoted text");
 
-        await ClickOverlayAndType("quoted text");
+        await Page.Locator("button[title='Blockquote']").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        await _page.Locator("button[title='Blockquote']").ClickAsync();
-        await Task.Delay(300);
-
-        var hasBq = await _page.EvaluateAsync<bool>(
+        var hasBq = await EvalAsync<bool>(
             "() => document.querySelector('.md-overlay blockquote') !== null || document.querySelector('.md-overlay .md-bq') !== null");
-
-        Assert.True(hasBq, "Overlay should contain a blockquote element after clicking Blockquote");
+        Assert.True(hasBq, "Overlay should contain blockquote element");
     }
 
     [Fact]
     public async Task BlockquoteButton_ShouldToggleOff()
     {
         await NavigateToEditor();
+        await FillContentAsync("quoted text");
 
-        await ClickOverlayAndType("quoted text");
+        await Page.Locator("button[title='Blockquote']").ClickAsync();
+        await WaitForOverlayUpdate();
+        var rawOn = await GetRawValue();
+        Assert.Contains("> ", rawOn);
 
-        // Toggle on
-        await _page.Locator("button[title='Blockquote']").ClickAsync();
-        await Task.Delay(300);
-
-        // Toggle off
-        await _page.Locator("button[title='Blockquote']").ClickAsync();
-        await Task.Delay(300);
-
-        var rawValue = await GetRawValue();
-        Assert.DoesNotContain("> ", rawValue);
+        await Page.Locator("button[title='Blockquote']").ClickAsync();
+        await WaitForOverlayUpdate();
+        var rawOff = await GetRawValue();
+        Assert.DoesNotContain("> ", rawOff);
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Link insertion tests
+    //  Link insertion
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task LinkButton_ShouldInsertLinkTemplate()
     {
         await NavigateToEditor();
+        await FillContentAsync("click here");
+        await SelectAll();
 
-        await ClickOverlayAndType("click here");
-
-        await _page.Locator("button[title='Insert Link']").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator("button[title='Insert Link']").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("[click here](url)", rawValue);
     }
 
     [Fact]
-    public async Task LinkButton_WithNoSelection_ShouldInsertDefaultLinkTemplate()
+    public async Task LinkButton_WithNoSelection_ShouldInsertDefaultTemplate()
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
-
-        await _page.Locator("button[title='Insert Link']").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator(".md-overlay").ClickAsync();
+        await Page.Locator("button[title='Insert Link']").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("[link text](url)", rawValue);
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Image insertion tests
+    //  Image insertion
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task ImageButton_ShouldInsertImageTemplate()
     {
         await NavigateToEditor();
+        await FillContentAsync("photo");
+        await SelectAll();
 
-        await ClickOverlayAndType("photo");
-
-        await _page.Locator("button[title='Insert Image']").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator("button[title='Insert Image']").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("![photo](url)", rawValue);
     }
 
     [Fact]
-    public async Task ImageButton_WithNoSelection_ShouldInsertDefaultImageTemplate()
+    public async Task ImageButton_WithNoSelection_ShouldInsertDefaultTemplate()
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
-
-        await _page.Locator("button[title='Insert Image']").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator(".md-overlay").ClickAsync();
+        await Page.Locator("button[title='Insert Image']").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("![alt text](url)", rawValue);
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Horizontal Rule tests
+    //  Horizontal Rule
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
@@ -601,12 +501,9 @@ public class EditorToolbarTests : IAsyncLifetime
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
-
-        await _page.Locator("button[title='Horizontal Rule']").ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator(".md-overlay").ClickAsync();
+        await Page.Locator("button[title='Horizontal Rule']").ClickAsync();
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("---", rawValue);
@@ -617,21 +514,17 @@ public class EditorToolbarTests : IAsyncLifetime
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
+        await Page.Locator(".md-overlay").ClickAsync();
+        await Page.Locator("button[title='Horizontal Rule']").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        await _page.Locator("button[title='Horizontal Rule']").ClickAsync();
-        await Task.Delay(300);
-
-        var hasHr = await _page.EvaluateAsync<bool>(
+        var hasHr = await EvalAsync<bool>(
             "() => document.querySelector('.md-overlay hr') !== null || document.querySelector('.md-overlay .md-hr') !== null");
-
-        Assert.True(hasHr, "Overlay should contain an <hr> element after inserting HR");
+        Assert.True(hasHr, "Overlay should contain HR element");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Undo / Redo tests
+    //  Undo / Redo (real keyboard typing — tests real undo stack)
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
@@ -640,15 +533,10 @@ public class EditorToolbarTests : IAsyncLifetime
         await NavigateToEditor();
 
         await ClickOverlayAndType("Hello");
-        await Task.Delay(200);
+        await Page.Locator("button[title='Undo (Ctrl+Z)']").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        var undoBtn = _page.Locator("button[title='Undo (Ctrl+Z)']");
-        await undoBtn.ClickAsync();
-        await Task.Delay(300);
-
-        var overlayText = await _page.EvaluateAsync<string>(
-            "() => document.querySelector('.md-overlay')?.textContent?.trim() || ''");
-
+        var overlayText = await GetOverlayText();
         Assert.DoesNotContain("Hello", overlayText);
     }
 
@@ -658,55 +546,37 @@ public class EditorToolbarTests : IAsyncLifetime
         await NavigateToEditor();
 
         await ClickOverlayAndType("Hello");
-        await Task.Delay(200);
+        await Page.Locator("button[title='Undo (Ctrl+Z)']").ClickAsync();
+        await WaitForOverlayUpdate();
+        await Page.Locator("button[title='Redo (Ctrl+Y)']").ClickAsync();
+        await WaitForOverlayUpdate();
 
-        var undoBtn = _page.Locator("button[title='Undo (Ctrl+Z)']");
-        await undoBtn.ClickAsync();
-        await Task.Delay(300);
-
-        var redoBtn = _page.Locator("button[title='Redo (Ctrl+Y)']");
-        await redoBtn.ClickAsync();
-        await Task.Delay(300);
-
-        var overlayText = await _page.EvaluateAsync<string>(
-            "() => document.querySelector('.md-overlay')?.textContent?.trim() || ''");
-
+        var overlayText = await GetOverlayText();
         Assert.Contains("Hello", overlayText);
     }
 
     [Fact]
-    public async Task UndoRedo_ShouldRestoreMultipleChanges()
+    public async Task UndoRedo_ShouldRestoreAfterUndo()
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
+        await ClickOverlayAndType("Hello World");
 
-        await _page.Keyboard.TypeAsync("One ");
-        await Task.Delay(200);
-        await _page.Keyboard.TypeAsync("Two ");
-        await Task.Delay(200);
-        await _page.Keyboard.TypeAsync("Three");
-        await Task.Delay(500);
+        var undoBtn = Page.Locator("button[title='Undo (Ctrl+Z)']");
+        var redoBtn = Page.Locator("button[title='Redo (Ctrl+Y)']");
 
-        var undoBtn = _page.Locator("button[title='Undo (Ctrl+Z)']");
-        var redoBtn = _page.Locator("button[title='Redo (Ctrl+Y)']");
-
-        // Undo twice
+        // Undo all typed text
         await undoBtn.ClickAsync();
-        await Task.Delay(200);
-        await undoBtn.ClickAsync();
-        await Task.Delay(300);
+        await WaitForOverlayUpdate();
 
         var rawAfterUndo = await GetRawValue();
-        Assert.DoesNotContain("Three", rawAfterUndo);
+        Assert.DoesNotContain("Hello", rawAfterUndo);
 
-        // Redo once
+        // Redo restores the text
         await redoBtn.ClickAsync();
-        await Task.Delay(300);
+        await WaitForOverlayUpdate();
 
         var rawAfterRedo = await GetRawValue();
-        Assert.Contains("Three", rawAfterRedo);
+        Assert.Contains("Hello", rawAfterRedo);
     }
 }

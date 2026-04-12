@@ -5,73 +5,50 @@ using Xunit;
 namespace Kanawanagasaki.Blazor.MarkdownEditor.Tests.Fixtures;
 
 /// <summary>
-/// xunit fixture that starts the Blazor WASM test app as a subprocess
-/// and provides a shared Playwright browser instance for all tests.
+/// xunit collection fixture that:
+///   1. Starts the TestApp via `dotnet run` as a background process
+///      (properly handles Blazor WASM static web assets)
+///   2. Waits for the server to be ready
+///   3. Provides a shared Playwright Firefox browser instance for all tests.
 /// </summary>
 public class TestAppFixture : IAsyncLifetime
 {
     private IPlaywright? _playwright;
-    private Process? _appProcess;
+    private Process? _serverProcess;
     public IBrowser? Browser { get; private set; }
-    public string BaseAddress { get; private set; } = null!;
-    private readonly int _port = FindFreePort();
-
-    private static int FindFreePort()
-    {
-        var listener = System.Net.Sockets.TcpListener.Create(0);
-        listener.Start();
-        int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
+    public string ServerUrl { get; private set; } = null!;
 
     public async Task InitializeAsync()
     {
-        // Start the Blazor WASM test app as a subprocess
-        var appProjectDir = Path.Combine(
-            Directory.GetCurrentDirectory(), "..", "..", "..", "..", "TestApp");
-        appProjectDir = Path.GetFullPath(appProjectDir);
+        // Find the TestApp project directory
+        var testAppDir = FindTestAppDir();
 
-        if (!Directory.Exists(appProjectDir))
-            throw new DirectoryNotFoundException($"TestApp directory not found: {appProjectDir}");
+        // Start the TestApp via dotnet run on a random port
+        var port = Random.Shared.Next(5000, 6000);
+        ServerUrl = $"http://127.0.0.1:{port}";
 
-        var dotnetRoot = Environment.GetEnvironmentVariable("DOTNET_ROOT") ?? "";
-        var dotnetExe = Path.Combine(dotnetRoot, "dotnet");
-        if (!File.Exists(dotnetExe))
-            dotnetExe = "dotnet";
-
-        _appProcess = new Process
+        var startInfo = new ProcessStartInfo
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = dotnetExe,
-                Arguments = $"run --urls http://127.0.0.1:{_port}",
-                WorkingDirectory = appProjectDir,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-                Environment =
-                {
-                    ["ASPNETCORE_ENVIRONMENT"] = "Development",
-                    ["DOTNET_ROOT"] = dotnetRoot,
-                }
-            }
+            FileName = "dotnet",
+            Arguments = $"run --urls \"http://127.0.0.1:{port}\" --no-launch-profile",
+            WorkingDirectory = testAppDir,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
         };
 
-        _appProcess.Start();
-        BaseAddress = $"http://127.0.0.1:{_port}";
+        _serverProcess = Process.Start(startInfo);
 
-        // Wait for the WASM dev server to be ready
-        using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        // Wait for the server to be ready by polling
+        using var client = new HttpClient();
         var ready = false;
-        var sw = Stopwatch.StartNew();
-        while (sw.Elapsed < TimeSpan.FromSeconds(60))
+        for (int i = 0; i < 120; i++) // up to 120 seconds
         {
             try
             {
-                var response = await httpClient.GetAsync(BaseAddress);
-                if (response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.OK)
+                var response = await client.GetAsync($"{ServerUrl}/", CancellationToken.None);
+                if (response.IsSuccessStatusCode)
                 {
                     ready = true;
                     break;
@@ -81,29 +58,26 @@ public class TestAppFixture : IAsyncLifetime
             {
                 // Server not ready yet
             }
-            await Task.Delay(500);
+            await Task.Delay(1000);
         }
 
         if (!ready)
         {
-            var stderr = _appProcess.StandardError.ReadToEnd();
-            var stdout = _appProcess.StandardOutput.ReadToEnd();
-            throw new InvalidOperationException(
-                $"Test app failed to start within 60s at {BaseAddress}.\nStdout: {stdout}\nStderr: {stderr}");
+            throw new TimeoutException(
+                $"TestApp did not start within 60 seconds. URL: {ServerUrl}");
         }
 
         _playwright = await Playwright.CreateAsync();
-        Browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        Browser = await _playwright.Firefox.LaunchAsync(new BrowserTypeLaunchOptions
         {
             Headless = true,
-            Args = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
         });
     }
 
     public async Task<IPage> CreatePageAsync()
     {
         if (Browser == null)
-            throw new InvalidOperationException("Browser not initialized. Ensure InitializeAsync was called.");
+            throw new InvalidOperationException("Browser not initialized.");
 
         var context = await Browser.NewContextAsync(new BrowserNewContextOptions
         {
@@ -122,10 +96,38 @@ public class TestAppFixture : IAsyncLifetime
         }
         _playwright?.Dispose();
 
-        if (_appProcess != null && !_appProcess.HasExited)
+        if (_serverProcess != null && !_serverProcess.HasExited)
         {
-            _appProcess.Kill(entireProcessTree: true);
-            _appProcess.WaitForExit(5000);
+            _serverProcess.Kill(entireProcessTree: true);
+            _serverProcess.WaitForExit(5000);
         }
+        _serverProcess?.Dispose();
+    }
+
+    /// <summary>
+    /// Finds the TestApp project directory by walking up from the test
+    /// assembly location to the solution root.
+    /// </summary>
+    private static string FindTestAppDir()
+    {
+        var baseDir = AppDomain.CurrentDomain.BaseDirectory!;
+        var dir = new DirectoryInfo(baseDir);
+
+        while (dir != null && !dir.GetFiles("*.slnx").Any())
+        {
+            dir = dir.Parent;
+        }
+
+        if (dir == null)
+            throw new DirectoryNotFoundException("Could not find solution root.");
+
+        var resolved = Path.Combine(dir.FullName,
+            "Kanawanagasaki.Blazor.MarkdownEditor.TestApp");
+
+        if (!Directory.Exists(resolved))
+            throw new DirectoryNotFoundException(
+                $"TestApp not found at {resolved}.");
+
+        return resolved;
     }
 }

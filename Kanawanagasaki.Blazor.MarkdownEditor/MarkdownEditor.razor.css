@@ -214,20 +214,10 @@
     transition: none;
 }
 
-/* ── selection highlight layer ─────────────────────────────── */
+/* ── native selection highlight on overlay ─────────────────── */
 
-::deep .md-selection-layer {
-    position: absolute;
-    z-index: 2;
-    pointer-events: none;
-    inset: 0;
-    overflow: hidden;
-}
-
-::deep .md-sel-seg {
-    position: absolute;
+::deep .md-overlay::selection {
     background-color: var(--md-sel-bg);
-    border-radius: 2px;
 }
 
 /* ── block-level rendered elements ──────────────────────────── */
@@ -381,11 +371,4 @@
     color: #6b7280;
 }
 
-/* selection highlight (from renderer) */
-::deep .md-sel {
-    background-color: var(--md-sel-bg);
-    border-radius: 2px;
-    color: inherit;
-    padding: 1px 0;
-    margin: -1px 0;
-}
+

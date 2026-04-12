@@ -4,12 +4,11 @@
  * Architecture:
  *  - Textarea: transparent, pointer-events:none, overflow:auto (hidden scrollbar).
  *    Acts as the scroll model. Browser auto-scrolls it to keep cursor visible.
- *  - Overlay: pointer-events:auto, user-select enabled, overflow-y:auto. Captures
- *    clicks and wheel. Users can natively select text on the rendered overlay.
- *    On mouseup, native overlay selection is converted to source offsets via
- *    visibleToSource mappings and synced to the textarea selection.
- *  - Selection layer: pointer-events:none. JS renders .md-sel-seg divs that
- *    visually highlight the textarea's selection range on the rendered overlay.
+ *  - Overlay: pointer-events:auto, overflow-y:auto. Captures clicks and wheel.
+ *    Users can natively select text on the rendered overlay via programmatic
+ *    Selection ranges created during mousedown/mousemove/mouseup. On mouseup,
+ *    the native overlay selection is kept and synced to textarea source offsets
+ *    via visibleToSource mappings.
  *  - Cursor: pointer-events:none, absolutely positioned. Placed at the overlay
  *    line's viewport position. X calculated via Range.getBoundingClientRect().
  */
@@ -17,13 +16,12 @@
 const _instances = new Map();
 
 class EditorInstance {
-    constructor(id, editorBody, textarea, overlay, cursorEl, selectionLayer) {
+    constructor(id, editorBody, textarea, overlay, cursorEl) {
         this.id = id;
         this.editorBody = editorBody;
         this.textarea = textarea;
         this.overlay = overlay;
         this.cursorEl = cursorEl;
-        this.selectionLayer = selectionLayer;
         this.blinkTimer = null;
         this.visible = true;
         this.lineHeight = 0;
@@ -45,7 +43,7 @@ class EditorInstance {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Selection highlight rendering
+//  Selection: native browser Selection API on overlay
 // ═══════════════════════════════════════════════════════════════════
 
 /**
@@ -53,7 +51,7 @@ class EditorInstance {
  * visibleToSource mapping.  Invisible source characters (syntax markers
  * like **, ##, `) are skipped so the highlight covers only visible text.
  */
-function sourceToVisibleOffset(visibleToSource, sourceOffset, isEnd) {
+function sourceToVisibleOffset(visibleToSource, sourceOffset) {
     if (!visibleToSource || visibleToSource.length === 0) return 0;
 
     // Before first visible char
@@ -82,64 +80,40 @@ function collectTextNodes(lineEl) {
 }
 
 /**
- * Given visible start/end offsets and the text nodes of an overlay line,
- * return { startNode, startOffset, endNode, endOffset } suitable for
- * creating a Range.
+ * Given a visible character offset and text nodes of a line,
+ * return { node, offset } for creating a Range endpoint.
  */
-function findVisibleRangeInNodes(textNodes, visStart, visEnd) {
-    let startNode = null, startOffset = 0;
-    let endNode = null, endOffset = 0;
-    let remaining = visStart;
-
-    for (let i = 0; i < textNodes.length; i++) {
-        const len = textNodes[i].textContent.length;
-        if (remaining <= len && startNode === null) {
-            startNode = textNodes[i];
-            startOffset = remaining;
-            remaining = visEnd - visStart; // reset for end search
-        } else if (startNode !== null) {
-            // we already found start, keep counting for end
-            // (remaining was adjusted above)
+function findNodeAtVisibleOffset(textNodes, visibleOffset) {
+    let remaining = visibleOffset;
+    for (const node of textNodes) {
+        const len = node.textContent.length;
+        if (remaining <= len) {
+            return { node, offset: remaining };
         }
-        if (startNode !== null) {
-            if (remaining <= len) {
-                endNode = textNodes[i];
-                endOffset = remaining;
-                break;
-            }
-            remaining -= len;
-        } else {
-            remaining -= len;
-        }
+        remaining -= len;
     }
-
-    // Fallback: past the end
-    if (!startNode && textNodes.length > 0) {
-        startNode = textNodes[0];
-        startOffset = 0;
-    }
-    if (!endNode && startNode) {
+    // Past the end — clamp to last node
+    if (textNodes.length > 0) {
         const last = textNodes[textNodes.length - 1];
-        endNode = last;
-        endOffset = last.textContent.length;
+        return { node: last, offset: last.textContent.length };
     }
-    if (!endNode) endNode = startNode;
-    if (!startNode) return null;
-
-    return { startNode, startOffset, endNode, endOffset };
+    return null;
 }
 
 /**
- * Update the visible selection highlight on the overlay.
- * Creates/removes .md-sel-seg divs inside the selection layer.
+ * Sync the textarea's selection range to a native browser Selection
+ * on the overlay.  Creates a single Range spanning from the visible
+ * character at selStart to the visible character at selEnd.
  */
-function updateSelectionHighlight(inst) {
-    const { textarea, overlay, selectionLayer, lineMappings } = inst;
+function syncTextareaSelectionToOverlay(inst) {
+    const { textarea, overlay, lineMappings } = inst;
     const selStart = textarea.selectionStart;
     const selEnd = textarea.selectionEnd;
 
-    if (selStart === selEnd || !selectionLayer) {
-        if (selectionLayer) selectionLayer.innerHTML = '';
+    if (selStart === selEnd) {
+        // No range selection — clear any native selection
+        const sel = window.getSelection();
+        if (sel) sel.removeAllRanges();
         return;
     }
 
@@ -149,80 +123,39 @@ function updateSelectionHighlight(inst) {
     const startLineIdx = text.substring(0, selStart).split('\n').length - 1;
     const endLineIdx = text.substring(0, selEnd).split('\n').length - 1;
 
-    const overlayRect = overlay.getBoundingClientRect();
-    const segments = [];
+    const startMapping = lineMappings[startLineIdx];
+    const endMapping = lineMappings[endLineIdx];
+    if (!startMapping || !endMapping) return;
 
-    for (let lineIdx = startLineIdx; lineIdx <= endLineIdx; lineIdx++) {
-        const mapping = lineMappings[lineIdx];
-        if (!mapping) continue;
+    // Convert source offsets to visible offsets per line
+    const visStart = sourceToVisibleOffset(startMapping.visibleToSource, selStart);
+    const visEnd = sourceToVisibleOffset(endMapping.visibleToSource, selEnd);
 
-        const lineEl = overlay.querySelector('[data-line-index="' + lineIdx + '"]');
-        if (!lineEl) continue;
+    // Find DOM elements for start and end lines
+    const startLineEl = overlay.querySelector('[data-line-index="' + startLineIdx + '"]');
+    const endLineEl = overlay.querySelector('[data-line-index="' + endLineIdx + '"]');
+    if (!startLineEl || !endLineEl) return;
 
-        // Source bounds of this line
-        const lineSourceStart = mapping.sourceStart;
-        const nextMapping = lineMappings[lineIdx + 1];
-        const lineSourceEnd = nextMapping
-            ? nextMapping.sourceStart - 1  // char before next line start
-            : text.length - 1;
+    const startNodes = collectTextNodes(startLineEl);
+    const endNodes = collectTextNodes(endLineEl);
+    if (startNodes.length === 0 || endNodes.length === 0) return;
 
-        // Intersection of selection with this line
-        const lineSelStart = Math.max(selStart, lineSourceStart);
-        const lineSelEnd = Math.min(selEnd, lineSourceEnd + 1);
-        if (lineSelStart >= lineSelEnd) continue;
+    const startPos = findNodeAtVisibleOffset(startNodes, visStart);
+    const endPos = findNodeAtVisibleOffset(endNodes, visEnd);
+    if (!startPos || !endPos) return;
 
-        // Convert to visible offsets
-        const visStart = sourceToVisibleOffset(mapping.visibleToSource, lineSelStart, false);
-        const visEnd = sourceToVisibleOffset(mapping.visibleToSource, lineSelEnd, true);
+    try {
+        const range = document.createRange();
+        range.setStart(startPos.node, startPos.offset);
+        range.setEnd(endPos.node, endPos.offset);
 
-        if (visStart >= visEnd) continue;
-
-        // Get bounding rect using Range API on the overlay text nodes
-        const textNodes = collectTextNodes(lineEl);
-        if (textNodes.length === 0) continue;
-
-        const vr = findVisibleRangeInNodes(textNodes, visStart, visEnd);
-        if (!vr) continue;
-
-        try {
-            const range = document.createRange();
-            range.setStart(vr.startNode, vr.startOffset);
-            range.setEnd(vr.endNode, vr.endOffset);
-
-            const rects = range.getClientRects();
-            // Merge adjacent rects that belong to the same visual line
-            for (const rect of rects) {
-                if (rect.width < 1) continue;
-                segments.push({
-                    top: rect.top - overlayRect.top,
-                    left: rect.left - overlayRect.left,
-                    width: rect.width,
-                    height: rect.height,
-                });
-            }
-        } catch {
-            // ignore Range errors
+        const sel = window.getSelection();
+        if (sel) {
+            sel.removeAllRanges();
+            sel.addRange(range);
         }
-    }
-
-    // Reuse or create segment elements
-    let children = selectionLayer.children;
-    while (children.length > segments.length) {
-        selectionLayer.removeChild(children[children.length - 1]);
-        children = selectionLayer.children;
-    }
-
-    for (let i = 0; i < segments.length; i++) {
-        let seg = children[i];
-        if (!seg) {
-            seg = document.createElement('div');
-            seg.className = 'md-sel-seg';
-            selectionLayer.appendChild(seg);
-        }
-        seg.style.top = segments[i].top + 'px';
-        seg.style.left = segments[i].left + 'px';
-        seg.style.width = segments[i].width + 'px';
-        seg.style.height = segments[i].height + 'px';
+    } catch {
+        // ignore Range errors (e.g. detached nodes during re-render)
     }
 }
 
@@ -339,7 +272,8 @@ function updateCursor(inst) {
         cursorEl.style.display = 'block';
     }
 
-    updateSelectionHighlight(inst);
+    // Sync native overlay selection from textarea selection
+    syncTextareaSelectionToOverlay(inst);
 }
 
 function getCaretXInOverlayLine(overlayLine, visibleOffset) {
@@ -486,92 +420,6 @@ function getSourceOffsetFromPoint(inst, clientX, clientY) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Native overlay selection → textarea selection sync
-// ═══════════════════════════════════════════════════════════════════
-
-/**
- * Given a text node and an offset within it, find the containing
- * overlay line element ([data-line-index]) and the total visible
- * character offset from the start of that line.
- */
-function getVisibleOffsetFromTextNode(textNode, offset, inst) {
-    let lineEl = textNode.parentElement;
-    while (lineEl && !lineEl.hasAttribute('data-line-index')) {
-        lineEl = lineEl.parentElement;
-    }
-    if (!lineEl) return { lineIndex: -1, visibleOffset: -1 };
-
-    const lineIndex = parseInt(lineEl.dataset.lineIndex);
-    const walker = document.createTreeWalker(lineEl, NodeFilter.SHOW_TEXT, null, false);
-    let visibleOffset = 0;
-    let node;
-    while ((node = walker.nextNode())) {
-        if (node === textNode) {
-            visibleOffset += offset;
-            return { lineIndex, visibleOffset };
-        }
-        visibleOffset += node.textContent.length;
-    }
-    return { lineIndex, visibleOffset };
-}
-
-/**
- * Convert a visible character offset on a line to a source offset
- * using the line's visibleToSource mapping.
- */
-function visibleToSourceOffset(visibleToSource, visibleOffset) {
-    if (!visibleToSource || visibleToSource.length === 0) return -1;
-    if (visibleOffset <= 0) return visibleToSource[0];
-    if (visibleOffset >= visibleToSource.length) {
-        return visibleToSource[visibleToSource.length - 1] + 1;
-    }
-    return visibleToSource[visibleOffset];
-}
-
-/**
- * Sync native browser selection on the overlay back to the textarea.
- * Called on mouseup and selectionchange.
- */
-function syncOverlaySelectionToTextarea(inst) {
-    if (inst._syncingSelection) return;
-
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
-
-    const range = sel.getRangeAt(0);
-
-    // Make sure selection is within the overlay
-    if (!inst.overlay.contains(range.startContainer) || !inst.overlay.contains(range.endContainer)) return;
-
-    // Get line index + visible offset for start
-    const startInfo = range.startContainer.nodeType === Node.TEXT_NODE
-        ? getVisibleOffsetFromTextNode(range.startContainer, range.startOffset, inst)
-        : { lineIndex: -1, visibleOffset: -1 };
-
-    // Get line index + visible offset for end
-    const endInfo = range.endContainer.nodeType === Node.TEXT_NODE
-        ? getVisibleOffsetFromTextNode(range.endContainer, range.endOffset, inst)
-        : { lineIndex: -1, visibleOffset: -1 };
-
-    if (startInfo.lineIndex < 0 || endInfo.lineIndex < 0) return;
-
-    // Convert visible offsets to source offsets
-    const startMapping = inst.lineMappings[startInfo.lineIndex];
-    const endMapping = inst.lineMappings[endInfo.lineIndex];
-    if (!startMapping || !endMapping) return;
-
-    const sourceStart = visibleToSourceOffset(startMapping.visibleToSource, startInfo.visibleOffset);
-    const sourceEnd = visibleToSourceOffset(endMapping.visibleToSource, endInfo.visibleOffset);
-
-    if (sourceStart < 0 || sourceEnd < 0) return;
-
-    inst._syncingSelection = true;
-    inst.textarea.setSelectionRange(sourceStart, sourceEnd);
-    updateCursor(inst);
-    inst._syncingSelection = false;
-}
-
-// ═══════════════════════════════════════════════════════════════════
 //  Scroll handling
 // ═══════════════════════════════════════════════════════════════════
 
@@ -605,8 +453,8 @@ function handleOverlayWheel(inst, e) {
 //  Public API (called from Blazor)
 // ═══════════════════════════════════════════════════════════════════
 
-export function initEditor(id, editorBody, textarea, overlay, cursorEl, selectionLayer) {
-    const inst = new EditorInstance(id, editorBody, textarea, overlay, cursorEl, selectionLayer);
+export function initEditor(id, editorBody, textarea, overlay, cursorEl) {
+    const inst = new EditorInstance(id, editorBody, textarea, overlay, cursorEl);
     _instances.set(id, inst);
     window.__mdEditorInstances = _instances;
 
@@ -647,7 +495,9 @@ export function initEditor(id, editorBody, textarea, overlay, cursorEl, selectio
     const onTextareaBlur = () => {
         stopBlinking(inst);
         cursorEl.style.display = 'none';
-        if (inst.selectionLayer) inst.selectionLayer.innerHTML = '';
+        // Clear native overlay selection on blur
+        const sel = window.getSelection();
+        if (sel) sel.removeAllRanges();
     };
 
     const onTextareaScroll = () => {
@@ -660,13 +510,12 @@ export function initEditor(id, editorBody, textarea, overlay, cursorEl, selectio
         handleOverlayWheel(inst, e);
     };
 
-    // ── Hybrid selection approach ──────────────────────────
+    // ── Selection via mousedown / mousemove / mouseup ───────
     // We preventDefault on mousedown so the browser doesn't steal focus
-    // from the textarea (which needs focus for keyboard input). Then we
-    // programmatically create native Selection ranges on the overlay using
-    // caretRangeFromPoint, which gives precise positioning even for
-    // heading-sized text. On mouseup, we sync the programmatic selection
-    // back to textarea source positions via visibleToSource mappings.
+    // from the textarea. During drag (mousemove), we update the textarea
+    // selection and let updateCursor → syncTextareaSelectionToOverlay
+    // create the native browser Selection on the overlay for visual
+    // feedback. On mouseup we keep the native selection (no clearing).
 
     const DRAG_THRESHOLD = 3;
 
@@ -698,17 +547,10 @@ export function initEditor(id, editorBody, textarea, overlay, cursorEl, selectio
         updateCursor(inst);
         stopBlinking(inst);
         cursorEl.style.display = 'block';
-
-        // Debug: log sourceOffset for diagnosis
-        console.log('[mousedown] clientXY=' + e.clientX + ',' + e.clientY +
-            ' sourceOffset=' + sourceOffset +
-            ' sel=' + inst.textarea.selectionStart + ',' + inst.textarea.selectionEnd);
     };
 
     const onOverlayMousemove = (e) => {
         // Only react when left button is actually held down.
-        // Use e.buttons (bitmask) because e.button is unreliable during
-        // mousemove — it returns 0 even when no button is pressed.
         if (!(e.buttons & 1)) return;
         // Check if we've moved enough to start a drag
         if (!inst._isDragging) {
@@ -730,38 +572,9 @@ export function initEditor(id, editorBody, textarea, overlay, cursorEl, selectio
         const selStart = Math.min(anchor, currentOffset);
         const selEnd = Math.max(anchor, currentOffset);
         inst.textarea.setSelectionRange(selStart, selEnd);
+        // updateCursor will call syncTextareaSelectionToOverlay
+        // which creates the native browser Selection on the overlay
         updateCursor(inst);
-
-        // Also create a programmatic native selection on the overlay
-        // so the user sees the selection highlight on the rendered text.
-        // Use caretRangeFromPoint for precise positioning (handles headings).
-        const startRange = getCaretRangeFromPoint(
-            inst._dragStartX || e.clientX, inst._dragStartY || e.clientY);
-        const endRange = getCaretRangeFromPoint(e.clientX, e.clientY);
-
-        if (startRange && endRange) {
-            const sel = window.getSelection();
-            if (sel) {
-                sel.removeAllRanges();
-                try {
-                    // Determine direction
-                    let range;
-                    if (startRange.startContainer === endRange.startContainer &&
-                        startRange.startOffset <= endRange.startOffset) {
-                        range = document.createRange();
-                        range.setStart(startRange.startContainer, startRange.startOffset);
-                        range.setEnd(endRange.startContainer, endRange.startOffset);
-                    } else {
-                        range = document.createRange();
-                        range.setStart(endRange.startContainer, endRange.startOffset);
-                        range.setEnd(startRange.startContainer, startRange.startOffset);
-                    }
-                    sel.addRange(range);
-                } catch {
-                    // ignore Range errors
-                }
-            }
-        }
     };
 
     const onOverlayMouseup = (e) => {
@@ -787,11 +600,9 @@ export function initEditor(id, editorBody, textarea, overlay, cursorEl, selectio
             const selEnd = Math.max(anchor, currentOffset);
             inst.textarea.setSelectionRange(selStart, selEnd);
         }
+        // updateCursor will sync native overlay selection via
+        // syncTextareaSelectionToOverlay — keep it, don't clear
         updateCursor(inst);
-
-        // Clear the native overlay selection (we use .md-sel-seg highlights instead)
-        const sel = window.getSelection();
-        if (sel) sel.removeAllRanges();
 
         // Re-focus textarea (ensure it wasn't lost)
         inst.textarea.focus();
@@ -805,10 +616,6 @@ export function initEditor(id, editorBody, textarea, overlay, cursorEl, selectio
     const onDocumentMouseup = (e) => {
         if (!inst._isDragging) return;
         inst._isDragging = false;
-
-        // Clear native selection
-        const sel = window.getSelection();
-        if (sel) sel.removeAllRanges();
 
         inst.textarea.focus();
         updateCursor(inst);

@@ -96,26 +96,74 @@ public static class MarkdownTextExtensions
 
         string selected = text.Substring(start, end - start);
 
-        // For multi-line selections, wrap markers on EACH content line
+        // For multi-line selections, wrap/unwrap markers on EACH content line
         // so the renderer can match opening/closing pairs per-line.
         if (selected.Contains('\n'))
         {
             var lines = selected.Split('\n');
-            for (int i = 0; i < lines.Length; i++)
+
+            // Check if ALL non-empty lines are already wrapped with this marker
+            bool allWrapped = lines.Any(l => !string.IsNullOrWhiteSpace(l));
+            foreach (var line in lines)
             {
-                if (!string.IsNullOrWhiteSpace(lines[i]))
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                if (line.Length < 2 * mLen ||
+                    line.Substring(0, mLen) != marker ||
+                    line.Substring(line.Length - mLen) != marker)
                 {
-                    lines[i] = marker + lines[i] + marker;
+                    allWrapped = false;
+                    break;
+                }
+                // For italic (*), ensure the * is not part of a ** bold marker.
+                if (marker == "*" && line.Length >= mLen + 1)
+                {
+                    if (line.StartsWith("**")) { allWrapped = false; break; }
+                    if (line.EndsWith("**")) { allWrapped = false; break; }
                 }
             }
-            string wrapped = string.Join("\n", lines);
-            string newT = text.Substring(0, start) + wrapped + text.Substring(end);
-            return new TextEditResult
+
+            if (allWrapped)
             {
-                Text = newT,
-                SelectionStart = start + mLen,
-                SelectionEnd = end + mLen,
-            };
+                // Unwrap: remove markers from each non-empty line
+                int totalRemoved = 0;
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    if (!string.IsNullOrWhiteSpace(lines[i]))
+                    {
+                        lines[i] = lines[i].Substring(mLen, lines[i].Length - 2 * mLen);
+                        totalRemoved += 2 * mLen;
+                    }
+                }
+                string unwrapped = string.Join("\n", lines);
+                string newT = text.Substring(0, start) + unwrapped + text.Substring(end);
+                return new TextEditResult
+                {
+                    Text = newT,
+                    SelectionStart = start,
+                    SelectionEnd = end - totalRemoved,
+                };
+            }
+            else
+            {
+                // Wrap: add markers to each non-empty line
+                int totalAdded = 0;
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    if (!string.IsNullOrWhiteSpace(lines[i]))
+                    {
+                        lines[i] = marker + lines[i] + marker;
+                        totalAdded += 2 * mLen;
+                    }
+                }
+                string wrapped = string.Join("\n", lines);
+                string newT = text.Substring(0, start) + wrapped + text.Substring(end);
+                return new TextEditResult
+                {
+                    Text = newT,
+                    SelectionStart = start,
+                    SelectionEnd = end + totalAdded,
+                };
+            }
         }
 
         // Single-line: simple wrap
@@ -253,20 +301,23 @@ public static class MarkdownTextExtensions
         string line = text.Substring(lineStart, lineEnd - lineStart);
 
         string newLine;
+        int selStart;
         if (line.StartsWith(prefix))
         {
             newLine = line.Substring(prefix.Length);
+            selStart = lineStart;
         }
         else
         {
             newLine = prefix + line;
+            selStart = lineStart + prefix.Length;
         }
 
         string newText = text.Substring(0, lineStart) + newLine + text.Substring(lineEnd);
         return new TextEditResult
         {
             Text = newText,
-            SelectionStart = lineStart,
+            SelectionStart = selStart,
             SelectionEnd = lineStart + newLine.Length,
         };
     }

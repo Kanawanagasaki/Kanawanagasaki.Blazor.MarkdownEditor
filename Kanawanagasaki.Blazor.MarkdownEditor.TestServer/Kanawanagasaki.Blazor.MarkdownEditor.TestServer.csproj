@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <!-- Disable static web assets for the TestServer itself — we serve
+         TestApp's assets via UseStaticWebAssets() from the project reference,
+         and our own wwwroot/ files (copied by MSBuild target) via UseStaticFiles(). -->
+    <StaticWebAssetsEnabled>false</StaticWebAssetsEnabled>
+    <NoDefaultLaunchSettingsFile>true</NoDefaultLaunchSettingsFile>
+  </PropertyGroup>
+
+  <!-- Enables UseStaticWebAssets() for serving Blazor WASM static web assets
+       (scoped CSS, _content/ paths, fingerprinted JS) from referenced projects. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="10.0.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Reference TestApp so it builds as a dependency. We don't need its assemblies,
+       just its build output (wwwroot/_framework/) and source wwwroot files. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Kanawanagasaki.Blazor.MarkdownEditor.TestApp\Kanawanagasaki.Blazor.MarkdownEditor.TestApp.csproj"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <!-- Copy TestApp static files into TestServer/wwwroot so UseStaticFiles() can serve them.
+       index.html, css/ come from TestApp source wwwroot.
+       _framework/ (WASM, blazor.boot.json, JS) comes from TestApp build output. -->
+  <Target Name="CopyWasmBuildOutput" AfterTargets="Build">
+    <PropertyGroup>
+      <_testAppDir>$(MSBuildProjectDirectory)/../Kanawanagasaki.Blazor.MarkdownEditor.TestApp</_testAppDir>
+      <_testAppWwwroot>$(_testAppDir)/wwwroot</_testAppWwwroot>
+      <_testAppBinWwwroot>$(_testAppDir)/bin/$(Configuration)/$(TargetFramework)/wwwroot</_testAppBinWwwroot>
+      <_destDir>$(MSBuildProjectDirectory)/wwwroot</_destDir>
+    </PropertyGroup>
+
+    <!-- Copy source wwwroot files (index.html, css/) — skip _framework since it comes from bin -->
+    <ItemGroup>
+      <_srcFiles Include="$(_testAppWwwroot)/**/*" Exclude="$(_testAppWwwroot)/_framework/**" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_srcFiles)"
+          DestinationFolder="$(_destDir)/%(RecursiveDir)"
+          SkipUnchangedFiles="true" />
+
+    <!-- Copy _framework/ from TestApp build output (WASM files, blazor JS, boot JSON) -->
+    <ItemGroup>
+      <_fwFiles Include="$(_testAppBinWwwroot)/_framework/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_fwFiles)"
+          DestinationFolder="$(_destDir)/_framework/%(RecursiveDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

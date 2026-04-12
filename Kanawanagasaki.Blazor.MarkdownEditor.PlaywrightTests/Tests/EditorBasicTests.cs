@@ -5,85 +5,34 @@ using Kanawanagasaki.Blazor.MarkdownEditor.Tests.Fixtures;
 namespace Kanawanagasaki.Blazor.MarkdownEditor.Tests.Tests;
 
 /// <summary>
-/// Basic interaction tests: focus, typing, click-to-position, cursor visibility,
-/// placeholder, and raw value verification.
+/// Basic interaction tests: focus, typing, click-to-position,
+/// cursor visibility, placeholder, and DOM structure.
+///
+/// These tests intentionally use real mouse clicks and keyboard input
+/// to verify the full input→focus→overlay rendering pipeline.
 /// </summary>
 [Collection(EditorTestCollection.Name)]
-public class EditorBasicTests : IAsyncLifetime
+public class EditorBasicTests : EditorTestBase
 {
-    private readonly TestAppFixture _fixture;
-    private IPage _page = null!;
-
     public EditorBasicTests(TestAppFixture fixture)
-    {
-        _fixture = fixture;
-    }
+        : base(fixture) { }
 
-    public async Task InitializeAsync()
-    {
-        _page = await _fixture.CreatePageAsync();
-    }
-
-    public async Task DisposeAsync()
-    {
-        await _page.CloseAsync();
-    }
-
-    // ── Helpers ─────────────────────────────────────────────────
-
-    private async Task NavigateToEditor()
-    {
-        await _page.GotoAsync(_fixture.BaseAddress, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
-
-        // Wait for Blazor WASM to finish loading (the "Loading..." text disappears)
-        await _page.WaitForFunctionAsync(
-            "() => !document.getElementById('app')?.textContent?.includes('Loading...')",
-            new PageWaitForFunctionOptions { Timeout = 60000 });
-
-        // Wait for the editor component to render
-        await _page.WaitForFunctionAsync(
-            "() => document.querySelector('.md-editor') !== null",
-            new PageWaitForFunctionOptions { Timeout = 15000 });
-        await _page.WaitForFunctionAsync(
-            "() => document.querySelector('.md-textarea') !== null && document.querySelector('.md-overlay') !== null",
-            new PageWaitForFunctionOptions { Timeout = 15000 });
-
-        // Wait for the editor body and JS module to initialize
-        await _page.WaitForFunctionAsync(
-            "() => document.querySelector('.md-textarea') !== null " +
-            "&& document.querySelector('.md-editor-body') !== null",
-            new PageWaitForFunctionOptions { Timeout = 15000 });
-
-        await Task.Delay(1000);
-    }
-
-    /// <summary>
-    /// Helper: type text after clicking the overlay (which focuses the textarea).
-    /// </summary>
-    private async Task ClickOverlayAndType(string text)
-    {
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
-        await _page.Keyboard.TypeAsync(text);
-        await Task.Delay(500);
-    }
-
-    // ── Focus tests ─────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════
+    //  Focus tests
+    // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task ClickOverlay_ShouldFocusTextarea()
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
+        await Page.Locator(".md-overlay").ClickAsync();
+        await WaitForTextareaFocus();
 
-        var isFocused = await _page.EvaluateAsync<bool>(
+        var isFocused = await EvalAsync<bool>(
             "() => document.activeElement === document.querySelector('.md-textarea')");
 
-        Assert.True(isFocused, "Textarea should be focused after clicking the overlay");
+        Assert.True(isFocused, "Textarea should receive focus after clicking the overlay");
     }
 
     [Fact]
@@ -91,16 +40,57 @@ public class EditorBasicTests : IAsyncLifetime
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(300);
+        await Page.Locator(".md-overlay").ClickAsync();
+        await WaitForCursorVisible();
 
-        var cursorExists = await _page.Locator(".md-cursor").CountAsync();
-        Assert.True(cursorExists > 0,
-            "Simulated cursor element should exist after clicking the overlay");
+        var cursorVisible = await EvalAsync<bool>(
+            "() => document.querySelector('.md-cursor')?.style.display === 'block'");
+
+        Assert.True(cursorVisible, "Simulated cursor should be visible after clicking the overlay");
     }
 
-    // ── Typing tests ────────────────────────────────────────────
+    [Fact]
+    public async Task ClickEditorBody_ShouldFocusTextarea()
+    {
+        await NavigateToEditor();
+
+        // Click on the editor body area (not a specific element) —
+        // focus should still transfer to the textarea.
+        await Page.Locator(".md-editor-body").ClickAsync();
+        await WaitForTextareaFocus();
+
+        var isFocused = await EvalAsync<bool>(
+            "() => document.activeElement === document.querySelector('.md-textarea')");
+
+        Assert.True(isFocused,
+            "Textarea should receive focus after clicking anywhere in the editor body");
+    }
+
+    [Fact]
+    public async Task ClickToolbarButton_ShouldNotStealFocusFromTextarea()
+    {
+        await NavigateToEditor();
+
+        // Focus textarea first
+        await Page.Locator(".md-overlay").ClickAsync();
+        await WaitForTextareaFocus();
+
+        // Click a toolbar button
+        await Page.Locator("button[title='Bold (Ctrl+B)']").ClickAsync();
+
+        // Focus should return to textarea after toolbar button action
+        await WaitForTextareaFocus();
+
+        var isFocused = await EvalAsync<bool>(
+            "() => document.activeElement === document.querySelector('.md-textarea')");
+
+        Assert.True(isFocused,
+            "Textarea should retain focus after clicking a toolbar button");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Typing tests (real keyboard → overlay rendering)
+    // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task TypeText_ShouldUpdateOverlay()
@@ -109,9 +99,7 @@ public class EditorBasicTests : IAsyncLifetime
 
         await ClickOverlayAndType("Hello");
 
-        var overlayText = await _page.EvaluateAsync<string>(
-            "() => document.querySelector('.md-overlay')?.textContent?.trim() || ''");
-
+        var overlayText = await GetOverlayText();
         Assert.Contains("Hello", overlayText);
     }
 
@@ -122,22 +110,8 @@ public class EditorBasicTests : IAsyncLifetime
 
         await ClickOverlayAndType("Hello World");
 
-        var rawValue = await _page.Locator("#raw-value").InnerTextAsync();
-
+        var rawValue = await GetRawValue();
         Assert.Contains("Hello World", rawValue);
-    }
-
-    [Fact]
-    public async Task TypeMultipleWords_ShouldRenderAll()
-    {
-        await NavigateToEditor();
-
-        await ClickOverlayAndType("Hello World");
-
-        var overlayText = await _page.EvaluateAsync<string>(
-            "() => document.querySelector('.md-overlay')?.textContent?.trim() || ''");
-
-        Assert.Contains("Hello World", overlayText);
     }
 
     [Fact]
@@ -145,94 +119,101 @@ public class EditorBasicTests : IAsyncLifetime
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
+        await Page.Locator(".md-overlay").ClickAsync();
+        await WaitForTextareaFocus();
 
-        await _page.Keyboard.TypeAsync("Line 1");
-        await _page.Keyboard.PressAsync("Enter");
-        await _page.Keyboard.TypeAsync("Line 2");
-        await Task.Delay(500);
+        await Page.Keyboard.TypeAsync("Line 1");
+        await Page.Keyboard.PressAsync("Enter");
+        await Page.Keyboard.TypeAsync("Line 2");
+        await WaitForOverlayUpdate(minLineCount: 2);
 
-        var lineCount = await _page.EvaluateAsync<int>(
+        var lineCount = await EvalAsync<int>(
             "() => document.querySelectorAll('.md-overlay [data-line-index]').length");
 
         Assert.True(lineCount >= 2,
-            $"Should have at least 2 lines after pressing Enter. Actual: {lineCount}");
+            $"Should have >= 2 lines after Enter. Actual: {lineCount}");
     }
 
-    // ── Click-to-position tests ─────────────────────────────────
+    [Fact]
+    public async Task TypeText_RawValueShouldMatchTextareaValue()
+    {
+        await NavigateToEditor();
+
+        await ClickOverlayAndType("Sync test");
+
+        // The #raw-value display should exactly mirror the textarea value
+        var matches = await EvalAsync<bool>(
+            @"() => {
+                const ta = document.querySelector('.md-textarea');
+                const raw = document.getElementById('raw-value');
+                return ta && raw && raw.textContent.trim() === ta.value.trim();
+            }");
+
+        Assert.True(matches,
+            "The raw-value display should exactly mirror the textarea value after typing");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Click-to-position tests
+    // ═══════════════════════════════════════════════════════════════
 
     [Fact]
-    public async Task ClickOnOverlay_WhenTextExists_ShouldMoveCursor()
+    public async Task ClickOnOverlay_WhenTextExists_ShouldRepositionCursor()
     {
         await NavigateToEditor();
 
         await ClickOverlayAndType("Hello World");
 
-        var overlay = _page.Locator(".md-overlay");
+        // Click near the top-left quadrant of the overlay
+        var overlay = Page.Locator(".md-overlay");
         var box = await overlay.BoundingBoxAsync();
-        if (box != null)
+        Assert.NotNull(box);
+        await overlay.ClickAsync(new LocatorClickOptions
         {
-            await overlay.ClickAsync(new LocatorClickOptions
-            {
-                Position = new Position { X = box.Width / 4, Y = box.Height / 4 }
-            });
-        }
-        await Task.Delay(300);
+            Position = new Position { X = box!.Width / 4, Y = box.Height / 4 }
+        });
 
-        await _page.Keyboard.TypeAsync("X");
-        await Task.Delay(500);
+        // Type X — it should appear inside the existing text
+        await Page.Keyboard.TypeAsync("X");
+        await WaitForOverlayUpdate();
 
-        var overlayText = await _page.EvaluateAsync<string>(
-            "() => document.querySelector('.md-overlay')?.textContent?.trim() || ''");
+        var rawValue = await GetRawValue();
+        Assert.Contains("X", rawValue);
 
-        Assert.Contains("X", overlayText);
+        // Verify the raw value still contains the original text
+        Assert.Contains("Hello World", rawValue);
     }
 
-    [Fact]
-    public async Task ClickOnEmptyOverlay_ShouldFocusEditor()
-    {
-        await NavigateToEditor();
-
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
-
-        await _page.Keyboard.TypeAsync("A");
-        await Task.Delay(500);
-
-        var overlayText = await _page.EvaluateAsync<string>(
-            "() => document.querySelector('.md-overlay')?.textContent?.trim() || ''");
-
-        Assert.Contains("A", overlayText);
-    }
-
-    // ── Placeholder test ────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════
+    //  Placeholder
+    // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task EmptyEditor_ShouldShowPlaceholder()
     {
         await NavigateToEditor();
 
-        var placeholder = await _page.EvaluateAsync<string>(
+        var placeholder = await EvalAsync<string>(
             "() => document.querySelector('.md-textarea')?.getAttribute('placeholder') || ''");
 
         Assert.Equal("Start typing...", placeholder);
     }
 
-    // ── Editor structure test ───────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════
+    //  DOM structure
+    // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task Editor_ShouldHaveExpectedStructure()
     {
         await NavigateToEditor();
 
-        Assert.True(await _page.Locator(".md-editor").CountAsync() > 0, "Editor root (.md-editor) should exist");
-        Assert.True(await _page.Locator(".md-toolbar").CountAsync() > 0, "Toolbar (.md-toolbar) should exist");
-        Assert.True(await _page.Locator(".md-textarea").CountAsync() > 0, "Textarea (.md-textarea) should exist");
-        Assert.True(await _page.Locator(".md-overlay").CountAsync() > 0, "Overlay (.md-overlay) should exist");
-        Assert.True(await _page.Locator(".md-cursor").CountAsync() > 0, "Cursor (.md-cursor) should exist");
+        Assert.True(await Page.Locator(".md-editor").CountAsync() > 0, ".md-editor missing");
+        Assert.True(await Page.Locator(".md-toolbar").CountAsync() > 0, ".md-toolbar missing");
+        Assert.True(await Page.Locator(".md-textarea").CountAsync() > 0, ".md-textarea missing");
+        Assert.True(await Page.Locator(".md-overlay").CountAsync() > 0, ".md-overlay missing");
+        Assert.True(await Page.Locator(".md-cursor").CountAsync() > 0, ".md-cursor missing");
+        Assert.True(await Page.Locator("#raw-value").CountAsync() > 0, "#raw-value missing");
     }
 
     [Fact]
@@ -240,35 +221,25 @@ public class EditorBasicTests : IAsyncLifetime
     {
         await NavigateToEditor();
 
-        var btnCount = await _page.Locator(".md-toolbar .md-btn").CountAsync();
-        Assert.True(btnCount >= 16, $"Toolbar should have at least 16 buttons. Actual: {btnCount}");
+        var btnCount = await Page.Locator(".md-toolbar .md-btn").CountAsync();
+        Assert.True(btnCount >= 16, $"Toolbar should have >= 16 buttons. Actual: {btnCount}");
 
-        Assert.True(await _page.Locator("button[title='Undo (Ctrl+Z)']").CountAsync() > 0, "Undo button should exist");
-        Assert.True(await _page.Locator("button[title='Redo (Ctrl+Y)']").CountAsync() > 0, "Redo button should exist");
-        Assert.True(await _page.Locator("button[title='Heading 1']").CountAsync() > 0, "H1 button should exist");
-        Assert.True(await _page.Locator("button[title='Heading 2']").CountAsync() > 0, "H2 button should exist");
-        Assert.True(await _page.Locator("button[title='Heading 3']").CountAsync() > 0, "H3 button should exist");
-        Assert.True(await _page.Locator("button[title='Bold (Ctrl+B)']").CountAsync() > 0, "Bold button should exist");
-        Assert.True(await _page.Locator("button[title='Italic (Ctrl+I)']").CountAsync() > 0, "Italic button should exist");
-        Assert.True(await _page.Locator("button[title='Strikethrough']").CountAsync() > 0, "Strikethrough button should exist");
-        Assert.True(await _page.Locator("button[title='Inline Code']").CountAsync() > 0, "Inline Code button should exist");
-        Assert.True(await _page.Locator("button[title='Code Block']").CountAsync() > 0, "Code Block button should exist");
-        Assert.True(await _page.Locator("button[title='Unordered List']").CountAsync() > 0, "UL button should exist");
-        Assert.True(await _page.Locator("button[title='Ordered List']").CountAsync() > 0, "OL button should exist");
-        Assert.True(await _page.Locator("button[title='Blockquote']").CountAsync() > 0, "Blockquote button should exist");
-        Assert.True(await _page.Locator("button[title='Insert Link']").CountAsync() > 0, "Link button should exist");
-        Assert.True(await _page.Locator("button[title='Insert Image']").CountAsync() > 0, "Image button should exist");
-        Assert.True(await _page.Locator("button[title='Horizontal Rule']").CountAsync() > 0, "HR button should exist");
-    }
+        string[] expectedTitles =
+        [
+            "Undo (Ctrl+Z)", "Redo (Ctrl+Y)",
+            "Heading 1", "Heading 2", "Heading 3",
+            "Bold (Ctrl+B)", "Italic (Ctrl+I)", "Strikethrough",
+            "Inline Code", "Code Block",
+            "Unordered List", "Ordered List",
+            "Blockquote",
+            "Insert Link", "Insert Image",
+            "Horizontal Rule"
+        ];
 
-    // ── Raw value display test ──────────────────────────────────
-
-    [Fact]
-    public async Task RawValueDisplay_ShouldExist()
-    {
-        await NavigateToEditor();
-
-        Assert.True(await _page.Locator("#raw-value").CountAsync() > 0,
-            "Raw value display element (#raw-value) should exist");
+        foreach (var title in expectedTitles)
+        {
+            Assert.True(await Page.Locator($"button[title='{title}']").CountAsync() > 0,
+                $"Toolbar should have '{title}' button");
+        }
     }
 }

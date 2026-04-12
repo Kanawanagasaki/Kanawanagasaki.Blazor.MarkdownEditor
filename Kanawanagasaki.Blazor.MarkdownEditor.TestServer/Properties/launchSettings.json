@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Kanawanagasaki.Blazor.MarkdownEditor.TestServer": {
+      "commandName": "Project",
+      "dotnetRunMessages": true
+    }
+  }
+}

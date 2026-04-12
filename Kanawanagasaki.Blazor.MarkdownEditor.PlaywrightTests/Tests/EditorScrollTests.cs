@@ -5,260 +5,261 @@ using Kanawanagasaki.Blazor.MarkdownEditor.Tests.Fixtures;
 namespace Kanawanagasaki.Blazor.MarkdownEditor.Tests.Tests;
 
 /// <summary>
-/// Scroll synchronization tests: verifies that the overlay scrolls in
-/// sync with the textarea when content overflows, and that mouse wheel
-/// events on the overlay propagate correctly.
+/// Scroll-synchronisation tests.
+///
+/// Architecture under test:
+///   - Textarea  - transparent, overflow:auto, acts as scroll model.
+///   - Overlay   - rendered markdown, overflow-y:auto, scroll position
+///                 is derived from textarea.scrollTop via JS mapping.
+///   - JS bridge  - textarea 'scroll' event -> syncOverlayFromTextarea()
+///                  overlay 'wheel' event  -> handleOverlayWheel()
+///
+/// Content injection uses fast JS-based FillContentAndWaitForMappings.
+/// Scroll sync assertions use WaitForScrollSync instead of Task.Delay.
+/// Mouse wheel tests retain real Mouse.WheelAsync to test the wheel handler.
 /// </summary>
 [Collection(EditorTestCollection.Name)]
-public class EditorScrollTests : IAsyncLifetime
+public class EditorScrollTests : EditorTestBase
 {
-    private readonly TestAppFixture _fixture;
-    private IPage _page = null!;
-
     public EditorScrollTests(TestAppFixture fixture)
-    {
-        _fixture = fixture;
-    }
-
-    public async Task InitializeAsync()
-    {
-        _page = await _fixture.CreatePageAsync();
-    }
-
-    public async Task DisposeAsync()
-    {
-        await _page.CloseAsync();
-    }
-
-    // ── Helpers ─────────────────────────────────────────────────
-
-    private async Task NavigateToEditor()
-    {
-        await _page.GotoAsync(_fixture.BaseAddress, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
-
-        // Wait for Blazor WASM to finish loading
-        await _page.WaitForFunctionAsync(
-            "() => !document.getElementById('app')?.textContent?.includes('Loading...')",
-            new PageWaitForFunctionOptions { Timeout = 60000 });
-
-        await _page.WaitForSelectorAsync(".md-editor", new PageWaitForSelectorOptions { Timeout = 30000 });
-        await _page.WaitForFunctionAsync(
-            "() => document.querySelector('.md-textarea') !== null && document.querySelector('.md-overlay') !== null",
-            new PageWaitForFunctionOptions { Timeout = 30000 });
-        await Task.Delay(1000);
-    }
-
-    private async Task ClickOverlayAndType(string text)
-    {
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
-        await _page.Keyboard.TypeAsync(text);
-        await Task.Delay(500);
-    }
+        : base(fixture) { }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Content overflow and line count
+    //  Content overflow / line rendering
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
-    public async Task LongContent_ShouldRenderManyLines()
+    public async Task LongContent_ShouldRenderCorrectLineCount()
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
+        var content = GenerateLines(40, "Line");
+        await FillContentAndWaitForMappings(content, 40);
 
-        for (int i = 0; i < 30; i++)
-        {
-            await _page.Keyboard.TypeAsync($"Line {i + 1}");
-            await _page.Keyboard.PressAsync("Enter");
-        }
-        await Task.Delay(500);
-
-        var lineCount = await _page.EvaluateAsync<int>(
-            "() => document.querySelectorAll('.md-overlay [data-line-index]').length");
-
-        Assert.True(lineCount >= 30, $"Should have at least 30 lines. Actual: {lineCount}");
+        var lineCount = await GetOverlayLineCount();
+        Assert.Equal(40, lineCount);
     }
 
     [Fact]
-    public async Task LongContent_OverlayShouldScroll()
+    public async Task LongContent_TextareaShouldBeScrollable()
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
+        var content = GenerateLines(40, "Line");
+        await FillContentAndWaitForMappings(content, 40);
 
-        for (int i = 0; i < 40; i++)
-        {
-            await _page.Keyboard.TypeAsync($"Line {i + 1} with some content");
-            await _page.Keyboard.PressAsync("Enter");
-        }
-        await Task.Delay(500);
+        var scrollH = await EvalAsync<int>("() => document.querySelector('.md-textarea').scrollHeight");
+        var clientH = await EvalAsync<int>("() => document.querySelector('.md-textarea').clientHeight");
 
-        var textareaScrollHeight = await _page.EvaluateAsync<int>(
-            "() => document.querySelector('.md-textarea')?.scrollHeight || 0");
-        var textareaClientHeight = await _page.EvaluateAsync<int>(
-            "() => document.querySelector('.md-textarea')?.clientHeight || 0");
-
-        Assert.True(textareaScrollHeight > textareaClientHeight,
-            $"Textarea should be scrollable. scrollHeight={textareaScrollHeight}, clientHeight={textareaClientHeight}");
+        Assert.True(scrollH > clientH,
+            $"Textarea should overflow. scrollHeight={scrollH} vs clientHeight={clientH}");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Scroll synchronization
+    //  Textarea -> Overlay scroll sync (JS-based scrolling)
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
-    public async Task TextareaScroll_ShouldSyncToOverlay()
+    public async Task TextareaScroll_ToBottom_ShouldSyncOverlayToBottom()
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
+        var content = GenerateLines(30, "Line content here");
+        await FillContentAndWaitForMappings(content, 30);
 
-        for (int i = 0; i < 30; i++)
+        // Scroll textarea to bottom
+        await EvalVoid("() => { const ta = document.querySelector('.md-textarea'); ta.scrollTop = ta.scrollHeight; }");
+        await WaitForScrollSync();
+
+        var textareaScroll = await EvalAsync<int>("() => document.querySelector('.md-textarea').scrollTop");
+        var overlayScroll  = await EvalAsync<int>("() => document.querySelector('.md-overlay').scrollTop");
+
+        Assert.True(textareaScroll > 0, "Textarea should be scrolled");
+        Assert.True(overlayScroll > 0,
+            $"Overlay must scroll when textarea scrolls. overlay.scrollTop={overlayScroll}");
+
+        // Both layers should be near their maximum scroll
+        var taMax = await EvalAsync<int>("() => document.querySelector('.md-textarea').scrollHeight - document.querySelector('.md-textarea').clientHeight");
+        var ovMax = await EvalAsync<int>("() => document.querySelector('.md-overlay').scrollHeight - document.querySelector('.md-overlay').clientHeight");
+
+        if (ovMax > 0)
         {
-            await _page.Keyboard.TypeAsync($"Line {i + 1} with enough content to wrap");
-            await _page.Keyboard.PressAsync("Enter");
+            var taPct = (double)textareaScroll / taMax;
+            var ovPct = (double)overlayScroll  / ovMax;
+            // Within 30% tolerance (headings / padding cause non-uniformity)
+            Assert.True(Math.Abs(taPct - ovPct) < 0.30,
+                $"Scroll positions should be roughly proportional. " +
+                $"textarea {taPct:P0} vs overlay {ovPct:P0}");
         }
-        await Task.Delay(500);
-
-        // Scroll the textarea to the bottom using JS
-        await _page.EvaluateAsync("() => { const ta = document.querySelector('.md-textarea'); if (ta) ta.scrollTop = ta.scrollHeight; }");
-        await Task.Delay(300);
-
-        var overlayScrollTop = await _page.EvaluateAsync<double>(
-            "() => document.querySelector('.md-overlay')?.scrollTop || 0");
-
-        Assert.True(overlayScrollTop > 0, $"Overlay should have scrolled. scrollTop={overlayScrollTop}");
     }
 
     [Fact]
-    public async Task MouseWheelOnOverlay_ShouldScrollContent()
+    public async Task TextareaScroll_ToMiddle_ShouldSyncOverlayProportionally()
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
+        var content = GenerateLines(30, "Line content here");
+        await FillContentAndWaitForMappings(content, 30);
 
-        for (int i = 0; i < 30; i++)
+        // Scroll textarea to 50%
+        var taScrollH = await EvalAsync<int>("() => document.querySelector('.md-textarea').scrollHeight");
+        var taClientH = await EvalAsync<int>("() => document.querySelector('.md-textarea').clientHeight");
+        var mid = (taScrollH - taClientH) / 2;
+        await EvalVoid($"() => {{ document.querySelector('.md-textarea').scrollTop = {mid}; }}");
+        await WaitForScrollSync();
+
+        var textareaScroll = await EvalAsync<int>("() => document.querySelector('.md-textarea').scrollTop");
+        var overlayScroll  = await EvalAsync<int>("() => document.querySelector('.md-overlay').scrollTop");
+
+        Assert.True(overlayScroll > 0, "Overlay should have scrolled");
+
+        var ovScrollH = await EvalAsync<int>("() => document.querySelector('.md-overlay').scrollHeight");
+        var ovClientH = await EvalAsync<int>("() => document.querySelector('.md-overlay').clientHeight");
+        var ovMax = ovScrollH - ovClientH;
+
+        if (ovMax > 0)
         {
-            await _page.Keyboard.TypeAsync($"Line {i + 1} with enough content to wrap");
-            await _page.Keyboard.PressAsync("Enter");
+            var taPct = (double)textareaScroll / (taScrollH - taClientH);
+            var ovPct = (double)overlayScroll  / ovMax;
+            Assert.True(Math.Abs(taPct - ovPct) < 0.30,
+                $"Middle scroll should be proportional. textarea {taPct:P0} vs overlay {ovPct:P0}");
         }
-        await Task.Delay(500);
+    }
 
-        var editorBody = _page.Locator(".md-editor-body");
+    [Fact]
+    public async Task TextareaScroll_ToTop_ShouldReduceOverlayScroll()
+    {
+        await NavigateToEditor();
+
+        var content = GenerateLines(30, "Line content here");
+        await FillContentAndWaitForMappings(content, 30);
+
+        // Scroll to bottom first
+        await EvalVoid("() => { const ta = document.querySelector('.md-textarea'); ta.scrollTop = ta.scrollHeight; }");
+        await WaitForScrollSync();
+        var bottomOverlayScroll = await EvalAsync<int>("() => document.querySelector('.md-overlay').scrollTop");
+
+        // Scroll to top
+        await EvalVoid("() => { document.querySelector('.md-textarea').scrollTop = 0; }");
+        await WaitForScrollSync();
+
+        var topOverlayScroll = await EvalAsync<int>("() => document.querySelector('.md-overlay').scrollTop");
+
+        // Overlay should have scrolled significantly less than when at bottom
+        Assert.True(topOverlayScroll < bottomOverlayScroll,
+            $"Overlay scrollTop at top ({topOverlayScroll}) should be less than at bottom ({bottomOverlayScroll})");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Mouse-wheel on overlay -> textarea scroll (real wheel events)
+    // ═══════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task MouseWheelOnOverlay_ShouldScrollTextareaAndOverlay()
+    {
+        await NavigateToEditor();
+
+        var content = GenerateLines(30, "Line content here");
+        await FillContentAndWaitForMappings(content, 30);
+
+        var editorBody = Page.Locator(".md-editor-body");
         var box = await editorBody.BoundingBoxAsync();
-        if (box != null)
-        {
-            await _page.Mouse.MoveAsync(box.X + box.Width / 2, box.Y + box.Height / 2);
-            await Task.Delay(100);
-            await _page.Mouse.WheelAsync(0, 300);
-            await Task.Delay(300);
-        }
+        Assert.NotNull(box);
+        await Page.Mouse.MoveAsync(box!.X + box.Width / 2, box.Y + box.Height / 2);
+        await Page.Mouse.WheelAsync(0, 300);
+        await WaitForScrollSync();
 
-        var textareaScrollTop = await _page.EvaluateAsync<double>(
-            "() => document.querySelector('.md-textarea')?.scrollTop || 0");
+        var textareaScroll = await EvalAsync<double>("() => document.querySelector('.md-textarea')?.scrollTop || 0");
+        var overlayScroll  = await EvalAsync<double>("() => document.querySelector('.md-overlay')?.scrollTop  || 0");
 
-        Assert.True(textareaScrollTop > 0, $"Textarea should have scrolled after wheel event. scrollTop={textareaScrollTop}");
+        Assert.True(textareaScroll > 0,
+            $"Textarea should scroll after wheel. scrollTop={textareaScroll}");
+        Assert.True(overlayScroll > 0,
+            $"Overlay should scroll in sync after wheel. scrollTop={overlayScroll}");
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //  Editor body height and overflow
-    // ═══════════════════════════════════════════════════════════════
-
     [Fact]
-    public async Task EditorBody_ShouldHaveOverflowHidden()
+    public async Task MouseWheelOnOverlay_SingleWheel_ShouldScrollTextarea()
     {
         await NavigateToEditor();
 
-        var overflow = await _page.EvaluateAsync<string>(
-            "() => getComputedStyle(document.querySelector('.md-editor-body')).overflow");
+        var content = GenerateLines(30, "Line content here");
+        await FillContentAndWaitForMappings(content, 30);
+
+        // Reset scroll to top (FillContentAsync may auto-scroll to cursor)
+        await EvalVoid("() => { document.querySelector('.md-textarea').scrollTop = 0; }");
+        await WaitForScrollSync();
+
+        var scrollBefore = await EvalAsync<int>("() => document.querySelector('.md-textarea').scrollTop");
+        Assert.Equal(0, scrollBefore);
+
+        var editorBody = Page.Locator(".md-editor-body");
+        var box = await editorBody.BoundingBoxAsync();
+        Assert.NotNull(box);
+        await Page.Mouse.MoveAsync(box!.X + box.Width / 2, box.Y + box.Height / 2);
+
+        await Page.Mouse.WheelAsync(0, 300);
+        await WaitForScrollSync();
+
+        var scrollAfter = await EvalAsync<int>("() => document.querySelector('.md-textarea').scrollTop");
+        Assert.True(scrollAfter > scrollBefore,
+            $"Textarea scrollTop should increase after wheel. Before={scrollBefore}, After={scrollAfter}");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  CSS / layout
+    // ═══════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task EditorBody_Layout_ShouldBeCorrect()
+    {
+        await NavigateToEditor();
+
+        var overflow  = await EvalAsync<string>("() => getComputedStyle(document.querySelector('.md-editor-body')).overflow");
+        var taPos     = await EvalAsync<string>("() => getComputedStyle(document.querySelector('.md-textarea')).position");
+        var ovPos     = await EvalAsync<string>("() => getComputedStyle(document.querySelector('.md-overlay')).position");
+        var minHeight = await EvalAsync<double>("() => parseFloat(getComputedStyle(document.querySelector('.md-editor')).minHeight)");
 
         Assert.Equal("hidden", overflow);
-    }
-
-    [Fact]
-    public async Task Textarea_ShouldBeAbsolutelyPositioned()
-    {
-        await NavigateToEditor();
-
-        var position = await _page.EvaluateAsync<string>(
-            "() => getComputedStyle(document.querySelector('.md-textarea')).position");
-
-        Assert.Equal("absolute", position);
-    }
-
-    [Fact]
-    public async Task Overlay_ShouldBeAbsolutelyPositioned()
-    {
-        await NavigateToEditor();
-
-        var position = await _page.EvaluateAsync<string>(
-            "() => getComputedStyle(document.querySelector('.md-overlay')).position");
-
-        Assert.Equal("absolute", position);
-    }
-
-    [Fact]
-    public async Task Editor_ShouldHaveMinHeight()
-    {
-        await NavigateToEditor();
-
-        var minHeight = await _page.EvaluateAsync<double>(
-            "() => parseFloat(getComputedStyle(document.querySelector('.md-editor')).minHeight)");
-
-        Assert.True(minHeight >= 200, $"Editor should have a reasonable min-height. Actual: {minHeight}px");
+        Assert.Equal("absolute", taPos);
+        Assert.Equal("absolute", ovPos);
+        Assert.True(minHeight >= 200, $"Editor min-height should be >= 200px. Actual: {minHeight}px");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Line index attributes
+    //  Line-index data attributes
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task RenderedLines_ShouldHaveDataLineIndex()
     {
         await NavigateToEditor();
-
         await ClickOverlayAndType("Line 1");
-        await _page.Keyboard.PressAsync("Enter");
-        await _page.Keyboard.TypeAsync("Line 2");
-        await Task.Delay(500);
+        await Page.Keyboard.PressAsync("Enter");
+        await Page.Keyboard.TypeAsync("Line 2");
+        await WaitForOverlayUpdate(minLineCount: 2);
 
-        var linesWithIndex = await _page.EvaluateAsync<int>(
+        var count = await EvalAsync<int>(
             "() => document.querySelectorAll('.md-overlay [data-line-index]').length");
 
-        Assert.True(linesWithIndex >= 2, $"Should have at least 2 lines with data-line-index. Actual: {linesWithIndex}");
+        Assert.True(count >= 2, $"Expected >= 2 lines with data-line-index. Actual: {count}");
     }
 
     [Fact]
-    public async Task LineIndexes_ShouldBeSequential()
+    public async Task LineIndexes_ShouldBeSequentialFromZero()
     {
         await NavigateToEditor();
+        await ClickOverlayAndType("A");
+        await Page.Keyboard.PressAsync("Enter");
+        await Page.Keyboard.TypeAsync("B");
+        await Page.Keyboard.PressAsync("Enter");
+        await Page.Keyboard.TypeAsync("C");
+        await WaitForOverlayUpdate(minLineCount: 3);
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
-
-        await _page.Keyboard.TypeAsync("A");
-        await _page.Keyboard.PressAsync("Enter");
-        await _page.Keyboard.TypeAsync("B");
-        await _page.Keyboard.PressAsync("Enter");
-        await _page.Keyboard.TypeAsync("C");
-        await Task.Delay(500);
-
-        var indexes = await _page.EvaluateAsync<int[]>(
-            @"() => {
-                const lines = document.querySelectorAll('.md-overlay [data-line-index]');
-                return Array.from(lines).map(el => parseInt(el.dataset.lineIndex));
-            }");
+        var indexes = await EvalAsync<int[]>(@"() => {
+            const lines = document.querySelectorAll('.md-overlay [data-line-index]');
+            return Array.from(lines).map(el => parseInt(el.dataset.lineIndex));
+        }");
 
         Assert.Equal(new[] { 0, 1, 2 }, indexes);
     }

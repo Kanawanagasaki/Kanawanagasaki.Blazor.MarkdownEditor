@@ -5,102 +5,46 @@ using Kanawanagasaki.Blazor.MarkdownEditor.Tests.Fixtures;
 namespace Kanawanagasaki.Blazor.MarkdownEditor.Tests.Tests;
 
 /// <summary>
-/// Keyboard shortcut tests: Ctrl+B, Ctrl+I, Tab handling, and
-/// keyboard-based selection/manipulation.
+/// Keyboard shortcut tests: Ctrl+B, Ctrl+I, Ctrl+Z, Tab,
+/// arrow keys, Home/End, Backspace, Delete.
+///
+/// These tests intentionally use real keyboard input to exercise
+/// the actual keydown/keyup → JS interop → Blazor → overlay pipeline.
 /// </summary>
 [Collection(EditorTestCollection.Name)]
-public class EditorShortcutTests : IAsyncLifetime
+public class EditorShortcutTests : EditorTestBase
 {
-    private readonly TestAppFixture _fixture;
-    private IPage _page = null!;
-
     public EditorShortcutTests(TestAppFixture fixture)
-    {
-        _fixture = fixture;
-    }
-
-    public async Task InitializeAsync()
-    {
-        _page = await _fixture.CreatePageAsync();
-    }
-
-    public async Task DisposeAsync()
-    {
-        await _page.CloseAsync();
-    }
-
-    // ── Helpers ─────────────────────────────────────────────────
-
-    private async Task NavigateToEditor()
-    {
-        await _page.GotoAsync(_fixture.BaseAddress, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
-
-        // Wait for Blazor WASM to finish loading
-        await _page.WaitForFunctionAsync(
-            "() => !document.getElementById('app')?.textContent?.includes('Loading...')",
-            new PageWaitForFunctionOptions { Timeout = 60000 });
-
-        await _page.WaitForSelectorAsync(".md-editor", new PageWaitForSelectorOptions { Timeout = 30000 });
-        await _page.WaitForFunctionAsync(
-            "() => document.querySelector('.md-textarea') !== null && document.querySelector('.md-overlay') !== null",
-            new PageWaitForFunctionOptions { Timeout = 30000 });
-        await Task.Delay(1000);
-    }
-
-    private async Task ClickOverlayAndType(string text)
-    {
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
-        await _page.Keyboard.TypeAsync(text);
-        await Task.Delay(500);
-    }
-
-    private async Task SelectAll()
-    {
-        // Re-focus textarea via overlay click first
-        await _page.Locator(".md-overlay").ClickAsync();
-        await Task.Delay(100);
-        await _page.Keyboard.PressAsync("Control+a");
-        await Task.Delay(200);
-    }
-
-    private async Task<string> GetRawValue()
-    {
-        return await _page.Locator("#raw-value").InnerTextAsync();
-    }
+        : base(fixture) { }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Ctrl+B (Bold shortcut)
+    //  Ctrl+B  (Bold)
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task CtrlB_ShouldToggleBold()
     {
         await NavigateToEditor();
-
         await ClickOverlayAndType("test");
         await SelectAll();
 
-        await _page.Keyboard.PressAsync("Control+b");
-        await Task.Delay(500);
+        await Page.Keyboard.PressAsync("Control+b");
+        await WaitForOverlayUpdate();
 
-        var hasBold = await _page.EvaluateAsync<bool>(
+        var hasBold = await EvalAsync<bool>(
             "() => document.querySelector('.md-overlay strong') !== null");
-
-        Assert.True(hasBold, "Ctrl+B should toggle bold on selected text");
+        Assert.True(hasBold, "Ctrl+B should produce <strong>");
     }
 
     [Fact]
     public async Task CtrlB_ShouldWrapMarkdown()
     {
         await NavigateToEditor();
-
         await ClickOverlayAndType("bold");
         await SelectAll();
 
-        await _page.Keyboard.PressAsync("Control+b");
-        await Task.Delay(500);
+        await Page.Keyboard.PressAsync("Control+b");
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("**bold**", rawValue);
@@ -110,53 +54,53 @@ public class EditorShortcutTests : IAsyncLifetime
     public async Task CtrlB_ShouldToggleOffWhenAlreadyBold()
     {
         await NavigateToEditor();
-
         await ClickOverlayAndType("text");
         await SelectAll();
 
-        await _page.Keyboard.PressAsync("Control+b");
-        await Task.Delay(300);
+        await Page.Keyboard.PressAsync("Control+b");
+        await WaitForOverlayUpdate();
 
-        await _page.Keyboard.PressAsync("Control+b");
-        await Task.Delay(500);
+        // Verify bold is on
+        var rawOn = await GetRawValue();
+        Assert.Contains("**", rawOn);
 
-        var hasBold = await _page.EvaluateAsync<bool>(
+        // Toggle off (same selection, just press Ctrl+B again)
+        await Page.Keyboard.PressAsync("Control+b");
+        await WaitForOverlayUpdate();
+
+        var hasBold = await EvalAsync<bool>(
             "() => document.querySelector('.md-overlay strong') !== null");
-
-        Assert.False(hasBold, "Ctrl+B should toggle bold off when already applied");
+        Assert.False(hasBold, "Ctrl+B should remove bold on second press");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Ctrl+I (Italic shortcut)
+    //  Ctrl+I  (Italic)
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
     public async Task CtrlI_ShouldToggleItalic()
     {
         await NavigateToEditor();
-
         await ClickOverlayAndType("test");
         await SelectAll();
 
-        await _page.Keyboard.PressAsync("Control+i");
-        await Task.Delay(500);
+        await Page.Keyboard.PressAsync("Control+i");
+        await WaitForOverlayUpdate();
 
-        var hasItalic = await _page.EvaluateAsync<bool>(
+        var hasItalic = await EvalAsync<bool>(
             "() => document.querySelector('.md-overlay em') !== null");
-
-        Assert.True(hasItalic, "Ctrl+I should toggle italic on selected text");
+        Assert.True(hasItalic, "Ctrl+I should produce <em>");
     }
 
     [Fact]
     public async Task CtrlI_ShouldWrapMarkdown()
     {
         await NavigateToEditor();
-
         await ClickOverlayAndType("italic");
         await SelectAll();
 
-        await _page.Keyboard.PressAsync("Control+i");
-        await Task.Delay(500);
+        await Page.Keyboard.PressAsync("Control+i");
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("*italic*", rawValue);
@@ -166,24 +110,23 @@ public class EditorShortcutTests : IAsyncLifetime
     public async Task CtrlI_ShouldToggleOffWhenAlreadyItalic()
     {
         await NavigateToEditor();
-
         await ClickOverlayAndType("text");
         await SelectAll();
 
-        await _page.Keyboard.PressAsync("Control+i");
-        await Task.Delay(300);
+        await Page.Keyboard.PressAsync("Control+i");
+        await WaitForOverlayUpdate();
 
-        await _page.Keyboard.PressAsync("Control+i");
-        await Task.Delay(500);
+        // Toggle off (same selection, just press Ctrl+I again)
+        await Page.Keyboard.PressAsync("Control+i");
+        await WaitForOverlayUpdate();
 
-        var hasItalic = await _page.EvaluateAsync<bool>(
+        var hasItalic = await EvalAsync<bool>(
             "() => document.querySelector('.md-overlay em') !== null");
-
-        Assert.False(hasItalic, "Ctrl+I should toggle italic off when already applied");
+        Assert.False(hasItalic, "Ctrl+I should remove italic on second press");
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Ctrl+Z (Undo shortcut)
+    //  Ctrl+Z  (Undo)
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
@@ -192,14 +135,10 @@ public class EditorShortcutTests : IAsyncLifetime
         await NavigateToEditor();
 
         await ClickOverlayAndType("Hello");
-        await Task.Delay(200);
+        await Page.Keyboard.PressAsync("Control+z");
+        await WaitForOverlayUpdate();
 
-        await _page.Keyboard.PressAsync("Control+z");
-        await Task.Delay(500);
-
-        var overlayText = await _page.EvaluateAsync<string>(
-            "() => document.querySelector('.md-overlay')?.textContent?.trim() || ''");
-
+        var overlayText = await GetOverlayText();
         Assert.DoesNotContain("Hello", overlayText);
     }
 
@@ -212,17 +151,13 @@ public class EditorShortcutTests : IAsyncLifetime
     {
         await NavigateToEditor();
 
-        var overlay = _page.Locator(".md-overlay");
-        await overlay.ClickAsync();
-        await Task.Delay(200);
+        await Page.Locator(".md-overlay").ClickAsync();
+        await Page.Keyboard.PressAsync("Tab");
+        await WaitForTextareaFocus();
 
-        await _page.Keyboard.PressAsync("Tab");
-        await Task.Delay(500);
-
-        var isTextareaFocused = await _page.EvaluateAsync<bool>(
+        var isFocused = await EvalAsync<bool>(
             "() => document.activeElement === document.querySelector('.md-textarea')");
-
-        Assert.True(isTextareaFocused, "Textarea should still be focused after pressing Tab");
+        Assert.True(isFocused, "Focus must stay on textarea after Tab");
 
         var rawValue = await GetRawValue();
         Assert.Contains("  ", rawValue);
@@ -232,53 +167,46 @@ public class EditorShortcutTests : IAsyncLifetime
     public async Task Tab_ShouldInsertTwoSpaces()
     {
         await NavigateToEditor();
-
         await ClickOverlayAndType("Hello");
-        await Task.Delay(200);
 
-        await _page.Keyboard.PressAsync("Tab");
-        await Task.Delay(500);
+        await Page.Keyboard.PressAsync("Tab");
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Equal("Hello  ", rawValue.TrimEnd('\n', '\r'));
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  Home/End key navigation
+    //  Home / End
     // ═══════════════════════════════════════════════════════════════
 
     [Fact]
-    public async Task HomeAndEnd_ShouldNavigateWithinEditor()
+    public async Task EndKey_ShouldMoveCursorToEndOfLine()
     {
         await NavigateToEditor();
-
         await ClickOverlayAndType("Hello World");
-        await Task.Delay(200);
 
-        await _page.Keyboard.PressAsync("End");
-        await Task.Delay(100);
-        await _page.Keyboard.TypeAsync("!");
-        await Task.Delay(500);
+        await Page.Keyboard.PressAsync("Home");
+        await Page.Keyboard.PressAsync("End");
+        await Page.Keyboard.TypeAsync("!");
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.EndsWith("!", rawValue.TrimEnd('\n', '\r'));
     }
 
     [Fact]
-    public async Task ArrowKeys_ShouldNavigate()
+    public async Task ArrowKeys_ShouldNavigateWithinText()
     {
         await NavigateToEditor();
-
         await ClickOverlayAndType("ABCD");
-        await Task.Delay(200);
 
-        await _page.Keyboard.PressAsync("ArrowLeft");
-        await Task.Delay(50);
-        await _page.Keyboard.PressAsync("ArrowLeft");
-        await Task.Delay(50);
-
-        await _page.Keyboard.TypeAsync("X");
-        await Task.Delay(500);
+        // Move cursor left by 2: AB|CD
+        await Page.Keyboard.PressAsync("ArrowLeft");
+        await Page.Keyboard.PressAsync("ArrowLeft");
+        // Insert X: ABXCD
+        await Page.Keyboard.TypeAsync("X");
+        await WaitForOverlayUpdate();
 
         var rawValue = await GetRawValue();
         Assert.Contains("ABXCD", rawValue);
@@ -292,67 +220,56 @@ public class EditorShortcutTests : IAsyncLifetime
     public async Task CtrlB_Then_CtrlI_ShouldApplyBoth()
     {
         await NavigateToEditor();
-
         await ClickOverlayAndType("text");
         await SelectAll();
 
-        await _page.Keyboard.PressAsync("Control+b");
-        await Task.Delay(300);
+        await Page.Keyboard.PressAsync("Control+b");
+        await WaitForOverlayUpdate();
+        await Page.Keyboard.PressAsync("Control+i");
+        await WaitForOverlayUpdate();
 
-        await _page.Keyboard.PressAsync("Control+i");
-        await Task.Delay(500);
+        var hasBold   = await EvalAsync<bool>("() => document.querySelector('.md-overlay strong') !== null");
+        var hasItalic = await EvalAsync<bool>("() => document.querySelector('.md-overlay em') !== null");
 
-        var hasBold = await _page.EvaluateAsync<bool>(
-            "() => document.querySelector('.md-overlay strong') !== null");
-        var hasItalic = await _page.EvaluateAsync<bool>(
-            "() => document.querySelector('.md-overlay em') !== null");
-
-        Assert.True(hasBold, "Bold should be applied");
+        Assert.True(hasBold,   "Bold should be applied");
         Assert.True(hasItalic, "Italic should be applied");
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    //  Backspace / Delete
+    // ═══════════════════════════════════════════════════════════════
+
     [Fact]
-    public async Task Backspace_ShouldDeleteCharacters()
+    public async Task Backspace_ShouldDeleteCharactersBehindCursor()
     {
         await NavigateToEditor();
-
         await ClickOverlayAndType("Hello");
-        await Task.Delay(200);
 
-        await _page.Keyboard.PressAsync("Backspace");
-        await Task.Delay(50);
-        await _page.Keyboard.PressAsync("Backspace");
-        await Task.Delay(50);
-        await _page.Keyboard.PressAsync("Backspace");
-        await Task.Delay(500);
+        await Page.Keyboard.PressAsync("Backspace");
+        await Page.Keyboard.PressAsync("Backspace");
+        await Page.Keyboard.PressAsync("Backspace");
+        await WaitForOverlayUpdate();
 
-        var overlayText = await _page.EvaluateAsync<string>(
-            "() => document.querySelector('.md-overlay')?.textContent?.trim() || ''");
-
+        var overlayText = await GetOverlayText();
         Assert.Contains("He", overlayText);
+        Assert.DoesNotContain("Hello", overlayText);
     }
 
     [Fact]
-    public async Task Delete_ShouldDeleteForwardCharacters()
+    public async Task Delete_ShouldDeleteCharactersAheadOfCursor()
     {
         await NavigateToEditor();
-
         await ClickOverlayAndType("Hello");
-        await Task.Delay(200);
 
-        await _page.Keyboard.PressAsync("Home");
-        await Task.Delay(100);
+        await Page.Keyboard.PressAsync("Home");
 
-        await _page.Keyboard.PressAsync("Delete");
-        await Task.Delay(50);
-        await _page.Keyboard.PressAsync("Delete");
-        await Task.Delay(50);
-        await _page.Keyboard.PressAsync("Delete");
-        await Task.Delay(500);
+        await Page.Keyboard.PressAsync("Delete");
+        await Page.Keyboard.PressAsync("Delete");
+        await Page.Keyboard.PressAsync("Delete");
+        await WaitForOverlayUpdate();
 
-        var overlayText = await _page.EvaluateAsync<string>(
-            "() => document.querySelector('.md-overlay')?.textContent?.trim() || ''");
-
+        var overlayText = await GetOverlayText();
         Assert.Contains("lo", overlayText);
+        Assert.DoesNotContain("Hello", overlayText);
     }
 }

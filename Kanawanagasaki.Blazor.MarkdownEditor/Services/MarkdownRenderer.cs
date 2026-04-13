@@ -349,14 +349,9 @@ public static class MarkdownRenderer
             }
 
             // ── italic *text* ────────────────────────────────
-            // Guard: prevent matching the 2nd * of ** or the 2nd/3rd * of ***,
-            // but ALLOW matching * that follows a *** close (i.e., *** * → the
-            // 4th * is a valid italic open).  The lookback `(i == 0 || text[i-1] != '*')`
-            // blocks * after any *, so we add an exception for the *** case.
-            bool precededByTripleStar = i >= 3 && text[i - 1] == '*' && text[i - 2] == '*' && text[i - 3] == '*';
             if (text[i] == '*' &&
                 (i + 1 < text.Length && text[i + 1] != '*') &&
-                (i == 0 || text[i - 1] != '*' || precededByTripleStar))
+                (i == 0 || text[i - 1] != '*'))
             {
                 int closePos = text.IndexOf('*', i + 1);
                 if (closePos > i && (closePos + 1 >= text.Length || text[closePos + 1] != '*'))

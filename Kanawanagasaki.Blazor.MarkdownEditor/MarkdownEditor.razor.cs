@@ -1,12 +1,12 @@
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
-using Kanawanagasaki.Blazor.MarkdownEditor.Services;
-using Kanawanagasaki.Blazor.MarkdownEditor.Extensions;
 
 namespace Kanawanagasaki.Blazor.MarkdownEditor;
 
 /// <summary>
 /// Base class for the <see cref="MarkdownEditor"/> component.
+/// Owns the Blazor lifecycle, JS interop, and wires the <see cref="MarkdownDocument"/>
+/// to the UI.
 /// </summary>
 public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
 {
@@ -51,31 +51,71 @@ public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
     [Parameter(CaptureUnmatchedValues = true)]
     public IDictionary<string, object>? AdditionalAttributes { get; set; }
 
+    /// <summary>
+    /// Exposes the <see cref="MarkdownDocument"/> that backs this editor
+    /// so consumers can programmatically apply formatting or inspect state.
+    /// </summary>
+    [Parameter]
+    public MarkdownDocument? Document { get; set; }
+
+    /// <summary>
+    /// Callback invoked when the <see cref="MarkdownDocument"/> is first created.
+    /// Use this to capture a reference and call methods like
+    /// <see cref="MarkdownDocument.ToggleBold"/> from code.
+    /// </summary>
+    [Parameter]
+    public EventCallback<MarkdownDocument> DocumentCreated { get; set; }
+
     // ── internal state ─────────────────────────────────────────
 
-    protected string _value = "";
-    protected string _renderedHtml = "";
-    protected RenderResult _renderResult = new();
+    protected MarkdownDocument _document = new();
     private bool _jsReady;
     private bool _externalValueChange;
     private bool _pendingMappingPush;
     private DotNetObjectReference<MarkdownEditorBase>? _dotNetRef;
+    private bool _documentCreatedFired;
 
     // ── lifecycle ──────────────────────────────────────────────
 
     protected override void OnInitialized()
     {
         _dotNetRef = DotNetObjectReference.Create(this);
+
+        // Allow external document injection
+        if (Document is not null)
+        {
+            _document = Document;
+        }
+
+        _document.TextChanged += OnDocumentTextChanged;
     }
 
     protected override void OnParametersSet()
     {
-        if (Value != _value)
+        // Sync external Value into document
+        if (Value != _document.Text)
         {
-            _value = Value;
-            _renderResult = MarkdownRenderer.Render(_value);
-            _renderedHtml = _renderResult.Html;
+            // Temporarily unsubscribe to avoid re-firing ValueChanged
+            _document.TextChanged -= OnDocumentTextChanged;
+            _document.Text = Value;
+            _document.TextChanged += OnDocumentTextChanged;
             _externalValueChange = true;
+        }
+
+        // Handle external Document injection after init
+        if (Document is not null && Document != _document)
+        {
+            _document.TextChanged -= OnDocumentTextChanged;
+            _document = Document;
+            _document.TextChanged += OnDocumentTextChanged;
+            _externalValueChange = true;
+        }
+
+        // Fire DocumentCreated callback once
+        if (!_documentCreatedFired)
+        {
+            _documentCreatedFired = true;
+            _ = DocumentCreated.InvokeAsync(_document);
         }
     }
 
@@ -90,14 +130,14 @@ public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
                 _instanceId, _editorBody, _textarea, _overlay, _cursor, _selectionContainer);
 
             await _jsModule.InvokeVoidAsync("setDotNetRef", _instanceId, _dotNetRef);
-            await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _value);
+            await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _document.Text);
             _pendingMappingPush = true;
             _jsReady = true;
         }
 
         if (_externalValueChange && _jsReady && _jsModule is not null)
         {
-            await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _value);
+            await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _document.Text);
             await _jsModule.InvokeVoidAsync("updateCursorPosition", _instanceId);
             _externalValueChange = false;
         }
@@ -106,32 +146,38 @@ public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
         {
             _pendingMappingPush = false;
             await PushMappings();
-            // After pushing mappings, sync cursor and scroll
-            // since the overlay content just changed
             await _jsModule.InvokeVoidAsync("updateCursorPosition", _instanceId);
         }
     }
 
+    // ── document → UI sync ─────────────────────────────────────
+
+    private async void OnDocumentTextChanged(string newText)
+    {
+        await ValueChanged.InvokeAsync(newText);
+        _pendingMappingPush = true;
+        StateHasChanged();
+    }
+
     // ── JS callbacks ───────────────────────────────────────────
 
-    /// <summary>Called from JS when the textarea value changes (input event).
-    /// Used instead of Blazor @oninput because pointer-events:none on the
-    /// textarea prevents Blazor's event binding from firing.</summary>
+    /// <summary>Called from JS when the textarea value changes.</summary>
     [JSInvokable("OnInputFromJs")]
     public async Task OnInputFromJs(string newValue)
     {
-        _value = newValue ?? "";
-        _renderResult = MarkdownRenderer.Render(_value);
-        _renderedHtml = _renderResult.Html;
+        // Direct text update bypasses the TextChanged event
+        // so we don't double-fire ValueChanged
+        _document.TextChanged -= OnDocumentTextChanged;
+        _document.Text = newValue ?? "";
+        _document.TextChanged += OnDocumentTextChanged;
 
-        await ValueChanged.InvokeAsync(_value);
+        await ValueChanged.InvokeAsync(_document.Text);
         _pendingMappingPush = true;
 
         StateHasChanged();
     }
 
-    /// <summary>Called from JS for keyboard shortcut handling.
-    /// Used instead of Blazor @onkeydown for the same reason as OnInputFromJs.</summary>
+    /// <summary>Called from JS for keyboard shortcut handling.</summary>
     [JSInvokable("OnKeyDownFromJs")]
     public async Task OnKeyDownFromJs(string key, bool ctrlKey, bool metaKey)
     {
@@ -140,18 +186,17 @@ public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
             switch (key.ToLowerInvariant())
             {
                 case "b":
-                    await ApplyBold();
+                    await ApplyAndSync(_document.ToggleBold);
                     return;
                 case "i":
-                    await ApplyItalic();
+                    await ApplyAndSync(_document.ToggleItalic);
                     return;
             }
         }
 
         if (key == "Tab")
         {
-            // preventDefault is handled in JS keydown listener
-            await InsertText("  ");
+            await ApplyAndSync(() => _document.InsertText("  "));
         }
     }
 
@@ -159,10 +204,7 @@ public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
     [JSInvokable("OnCursorChangedFromJs")]
     public void OnCursorChangedFromJs()
     {
-        // The textarea cursor moved due to an overlay click.
-        // We don't need to change the value, just let Blazor know
-        // the cursor position might have changed.
-        // No StateHasChanged needed — the overlay didn't change.
+        // Cursor moved via overlay click — no value change needed.
     }
 
     // ── mapping sync ───────────────────────────────────────────
@@ -171,7 +213,8 @@ public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
     {
         if (_jsModule is null) return;
 
-        var serializable = _renderResult.Lines.Select(l => new
+        var result = _document.RenderResult;
+        var serializable = result.Lines.Select(l => new
         {
             sourceStart = l.SourceStart,
             visibleToSource = l.VisibleToSource,
@@ -180,234 +223,47 @@ public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
         await _jsModule.InvokeVoidAsync("updateMappings", _instanceId, serializable);
     }
 
-    // ── toolbar actions: inline toggles ────────────────────────
+    // ── toolbar actions ────────────────────────────────────────
 
-    protected async Task ApplyBold()
-        => await ApplyInlineToggle(MarkdownTextExtensions.ToggleBold);
-
-    protected async Task ApplyItalic()
-        => await ApplyInlineToggle(MarkdownTextExtensions.ToggleItalic);
-
-    protected async Task ApplyStrikethrough()
-        => await ApplyInlineToggle(MarkdownTextExtensions.ToggleStrikethrough);
-
-    protected async Task ApplyInlineCode()
-        => await ApplyInlineToggle(MarkdownTextExtensions.ToggleInlineCode);
-
-    protected async Task ApplyInlineToggle(
-        Func<string, int, int, TextEditResult> editFunc)
+    /// <summary>Generic helper: execute a document edit and sync to JS.</summary>
+    private async Task ApplyAndSync(Action editAction)
     {
         if (_jsModule is null) return;
 
+        // Read current selection from JS textarea
         var sel = await _jsModule.InvokeAsync<SelectionRange>("getSelection", _instanceId);
-        var result = editFunc(_value, sel.Start, sel.End);
+        _document.SetSelection(sel.Start, sel.End);
 
-        _value = result.Text;
-        _renderResult = MarkdownRenderer.Render(_value);
-        _renderedHtml = _renderResult.Html;
-        await ValueChanged.InvokeAsync(_value);
-        _pendingMappingPush = true;
+        editAction();
 
-        await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _value);
+        await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _document.Text);
         await _jsModule.InvokeVoidAsync("setSelection",
-            _instanceId, result.SelectionStart, result.SelectionEnd);
+            _instanceId, _document.NewSelectionStart, _document.NewSelectionEnd);
         await _jsModule.InvokeVoidAsync("updateCursorPosition", _instanceId);
 
         StateHasChanged();
     }
 
-    // ── toolbar actions: block-level ───────────────────────────
+    // ── toolbar: inline toggles ────────────────────────────────
 
-    protected async Task ApplyHeading(int level)
-    {
-        if (_jsModule is null) return;
+    protected Task ApplyBold() => ApplyAndSync(_document.ToggleBold);
+    protected Task ApplyItalic() => ApplyAndSync(_document.ToggleItalic);
+    protected Task ApplyStrikethrough() => ApplyAndSync(_document.ToggleStrikethrough);
+    protected Task ApplyInlineCode() => ApplyAndSync(_document.ToggleInlineCode);
 
-        var sel = await _jsModule.InvokeAsync<SelectionRange>("getSelection", _instanceId);
-        var result = MarkdownTextExtensions.ToggleHeading(_value, sel.Start, sel.End, level);
+    // ── toolbar: block-level ───────────────────────────────────
 
-        _value = result.Text;
-        _renderResult = MarkdownRenderer.Render(_value);
-        _renderedHtml = _renderResult.Html;
-        await ValueChanged.InvokeAsync(_value);
-        _pendingMappingPush = true;
+    protected Task ApplyHeading(int level) => ApplyAndSync(() => _document.ToggleHeading(level));
+    protected Task ApplyUnorderedList() => ApplyAndSync(_document.ToggleUnorderedList);
+    protected Task ApplyOrderedList() => ApplyAndSync(_document.ToggleOrderedList);
+    protected Task ApplyBlockquote() => ApplyAndSync(_document.ToggleBlockquote);
 
-        await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _value);
-        await _jsModule.InvokeVoidAsync("setSelection",
-            _instanceId, result.SelectionStart, result.SelectionEnd);
-        await _jsModule.InvokeVoidAsync("updateCursorPosition", _instanceId);
+    // ── toolbar: insertions ────────────────────────────────────
 
-        StateHasChanged();
-    }
-
-    protected async Task ApplyUnorderedList()
-    {
-        if (_jsModule is null) return;
-
-        var sel = await _jsModule.InvokeAsync<SelectionRange>("getSelection", _instanceId);
-        var result = MarkdownTextExtensions.ToggleUnorderedList(_value, sel.Start, sel.End);
-
-        _value = result.Text;
-        _renderResult = MarkdownRenderer.Render(_value);
-        _renderedHtml = _renderResult.Html;
-        await ValueChanged.InvokeAsync(_value);
-        _pendingMappingPush = true;
-
-        await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _value);
-        await _jsModule.InvokeVoidAsync("setSelection",
-            _instanceId, result.SelectionStart, result.SelectionEnd);
-        await _jsModule.InvokeVoidAsync("updateCursorPosition", _instanceId);
-
-        StateHasChanged();
-    }
-
-    protected async Task ApplyOrderedList()
-    {
-        if (_jsModule is null) return;
-
-        var sel = await _jsModule.InvokeAsync<SelectionRange>("getSelection", _instanceId);
-        var result = MarkdownTextExtensions.ToggleOrderedList(_value, sel.Start, sel.End);
-
-        _value = result.Text;
-        _renderResult = MarkdownRenderer.Render(_value);
-        _renderedHtml = _renderResult.Html;
-        await ValueChanged.InvokeAsync(_value);
-        _pendingMappingPush = true;
-
-        await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _value);
-        await _jsModule.InvokeVoidAsync("setSelection",
-            _instanceId, result.SelectionStart, result.SelectionEnd);
-        await _jsModule.InvokeVoidAsync("updateCursorPosition", _instanceId);
-
-        StateHasChanged();
-    }
-
-    protected async Task ApplyBlockquote()
-    {
-        if (_jsModule is null) return;
-
-        var sel = await _jsModule.InvokeAsync<SelectionRange>("getSelection", _instanceId);
-        var result = MarkdownTextExtensions.ToggleBlockquote(_value, sel.Start, sel.End);
-
-        _value = result.Text;
-        _renderResult = MarkdownRenderer.Render(_value);
-        _renderedHtml = _renderResult.Html;
-        await ValueChanged.InvokeAsync(_value);
-        _pendingMappingPush = true;
-
-        await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _value);
-        await _jsModule.InvokeVoidAsync("setSelection",
-            _instanceId, result.SelectionStart, result.SelectionEnd);
-        await _jsModule.InvokeVoidAsync("updateCursorPosition", _instanceId);
-
-        StateHasChanged();
-    }
-
-    // ── toolbar actions: insertions ────────────────────────────
-
-    protected async Task InsertLink()
-    {
-        if (_jsModule is null) return;
-
-        var sel = await _jsModule.InvokeAsync<SelectionRange>("getSelection", _instanceId);
-        var result = MarkdownTextExtensions.InsertLink(_value, sel.Start, sel.End);
-
-        _value = result.Text;
-        _renderResult = MarkdownRenderer.Render(_value);
-        _renderedHtml = _renderResult.Html;
-        await ValueChanged.InvokeAsync(_value);
-        _pendingMappingPush = true;
-
-        await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _value);
-        await _jsModule.InvokeVoidAsync("setSelection",
-            _instanceId, result.SelectionStart, result.SelectionEnd);
-        await _jsModule.InvokeVoidAsync("updateCursorPosition", _instanceId);
-
-        StateHasChanged();
-    }
-
-    protected async Task InsertImage()
-    {
-        if (_jsModule is null) return;
-
-        var sel = await _jsModule.InvokeAsync<SelectionRange>("getSelection", _instanceId);
-        var result = MarkdownTextExtensions.InsertImage(_value, sel.Start, sel.End);
-
-        _value = result.Text;
-        _renderResult = MarkdownRenderer.Render(_value);
-        _renderedHtml = _renderResult.Html;
-        await ValueChanged.InvokeAsync(_value);
-        _pendingMappingPush = true;
-
-        await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _value);
-        await _jsModule.InvokeVoidAsync("setSelection",
-            _instanceId, result.SelectionStart, result.SelectionEnd);
-        await _jsModule.InvokeVoidAsync("updateCursorPosition", _instanceId);
-
-        StateHasChanged();
-    }
-
-    protected async Task InsertCodeBlock()
-    {
-        if (_jsModule is null) return;
-
-        var sel = await _jsModule.InvokeAsync<SelectionRange>("getSelection", _instanceId);
-        var result = MarkdownTextExtensions.InsertCodeBlock(_value, sel.Start, sel.End);
-
-        _value = result.Text;
-        _renderResult = MarkdownRenderer.Render(_value);
-        _renderedHtml = _renderResult.Html;
-        await ValueChanged.InvokeAsync(_value);
-        _pendingMappingPush = true;
-
-        await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _value);
-        await _jsModule.InvokeVoidAsync("setSelection",
-            _instanceId, result.SelectionStart, result.SelectionEnd);
-        await _jsModule.InvokeVoidAsync("updateCursorPosition", _instanceId);
-
-        StateHasChanged();
-    }
-
-    protected async Task InsertHorizontalRule()
-    {
-        if (_jsModule is null) return;
-
-        var sel = await _jsModule.InvokeAsync<SelectionRange>("getSelection", _instanceId);
-        var result = MarkdownTextExtensions.InsertHorizontalRule(_value, sel.Start, sel.End);
-
-        _value = result.Text;
-        _renderResult = MarkdownRenderer.Render(_value);
-        _renderedHtml = _renderResult.Html;
-        await ValueChanged.InvokeAsync(_value);
-        _pendingMappingPush = true;
-
-        await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _value);
-        await _jsModule.InvokeVoidAsync("setSelection",
-            _instanceId, result.SelectionStart, result.SelectionEnd);
-        await _jsModule.InvokeVoidAsync("updateCursorPosition", _instanceId);
-
-        StateHasChanged();
-    }
-
-    protected async Task InsertText(string text)
-    {
-        if (_jsModule is null) return;
-
-        var sel = await _jsModule.InvokeAsync<SelectionRange>("getSelection", _instanceId);
-        string newText = _value.Substring(0, sel.Start) + text + _value.Substring(sel.End);
-        int newPos = sel.Start + text.Length;
-
-        _value = newText;
-        _renderResult = MarkdownRenderer.Render(_value);
-        _renderedHtml = _renderResult.Html;
-        await ValueChanged.InvokeAsync(_value);
-        _pendingMappingPush = true;
-
-        await _jsModule.InvokeVoidAsync("setTextValue", _instanceId, _value);
-        await _jsModule.InvokeVoidAsync("setSelection", _instanceId, newPos, newPos);
-        await _jsModule.InvokeVoidAsync("updateCursorPosition", _instanceId);
-
-        StateHasChanged();
-    }
+    protected Task InsertLink() => ApplyAndSync(_document.InsertLink);
+    protected Task InsertImage() => ApplyAndSync(_document.InsertImage);
+    protected Task InsertCodeBlock() => ApplyAndSync(_document.InsertCodeBlock);
+    protected Task InsertHorizontalRule() => ApplyAndSync(_document.InsertHorizontalRule);
 
     // ── native undo / redo ─────────────────────────────────────
 
@@ -427,6 +283,8 @@ public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _document.TextChanged -= OnDocumentTextChanged;
+
         if (_dotNetRef is not null)
         {
             try { _dotNetRef.Dispose(); }

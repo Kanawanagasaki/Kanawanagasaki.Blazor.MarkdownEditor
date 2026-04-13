@@ -126,7 +126,7 @@
         </textarea>
 
         @* Overlay: visual layer, captures clicks and wheel events *@
-        <div class="md-overlay" @ref="_overlay">@((MarkupString)_renderedHtml)</div>
+        <div class="md-overlay" @ref="_overlay">@((MarkupString)_document.RenderedHtml)</div>
 
         @* Custom selection highlight: div-based overlay replacing native ::selection *@
         <div class="md-selection-container" @ref="_selectionContainer"></div>

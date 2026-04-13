@@ -1668,4 +1668,224 @@ public class MarkdownEditorComponentTests : BunitContext
         // The overlay should reflect the new value
         Assert.Contains("updated", cut.Find(".md-overlay").InnerHtml);
     }
+
+    [Fact]
+    public void CrossSelection_BoldItalicX4()
+    {
+        string text = "One two three four five";
+
+        var result = MarkdownTextExtensions.ToggleBold(text, 4, 13);
+        Assert.Equal("One **two three** four five", result.Text);
+        text = result.Text;
+
+        result = MarkdownTextExtensions.ToggleItalic(text, 10, 22);
+        Assert.Equal("One **two *three*** *four* five", result.Text);
+        text = result.Text;
+
+        result = MarkdownTextExtensions.ToggleItalic(text, result.SelectionStart, result.SelectionEnd);
+        Assert.Equal("One **two three** four five", result.Text);
+        text = result.Text;
+
+        result = MarkdownTextExtensions.ToggleItalic(text, result.SelectionStart, result.SelectionEnd);
+        Assert.Equal("One **two *three*** *four* five", result.Text);
+        text = result.Text;
+
+        result = MarkdownTextExtensions.ToggleItalic(text, result.SelectionStart, result.SelectionEnd);
+        Assert.Equal("One **two three** four five", result.Text);
+    }
+
+    [Fact]
+    public void CrossSelection_BoldItalicStrikethroughCode()
+    {
+        string text = "One two three four five";
+
+        var result = MarkdownTextExtensions.ToggleBold(text, 4, 13);
+        Assert.Equal("One **two three** four five", result.Text);
+        text = result.Text;
+
+        result = MarkdownTextExtensions.ToggleItalic(text, 10, 22);
+        Assert.Equal("One **two *three*** *four* five", result.Text);
+        text = result.Text;
+
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, result.SelectionStart, result.SelectionEnd);
+        Assert.Equal("One **two ~~*three*~~** ~~*four*~~ five", result.Text);
+        text = result.Text;
+
+        result = MarkdownTextExtensions.ToggleInlineCode(text, result.SelectionStart, result.SelectionEnd);
+        Assert.Equal("One **two ~~*`three`*~~** ~~*`four`*~~ five", result.Text);
+
+        result = MarkdownTextExtensions.ToggleItalic(text, 10, 22);
+        Assert.Equal("One **two ~~`three`~~** ~~`four`~~ five", result.Text);
+        text = result.Text;
+        
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, result.SelectionStart, result.SelectionEnd);
+        Assert.Equal("One **two `three`** `four` five", result.Text);
+        text = result.Text;
+        
+        result = MarkdownTextExtensions.ToggleInlineCode(text, result.SelectionStart, result.SelectionEnd);
+        Assert.Equal("One **two three** four five", result.Text);
+        text = result.Text;
+    }
+
+    [Fact]
+    public void BoldToggle_AllPossibleSelections()
+    {
+        string text = "One two three";
+
+        var result = MarkdownTextExtensions.ToggleBold(text, 4, 7);
+        Assert.Equal("One **two** three", result.Text);
+        text = result.Text;
+
+        result = MarkdownTextExtensions.ToggleBold(text, 6, 9);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleBold(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleBold(text, 5, 9);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleBold(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleBold(text, 4, 9);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleBold(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleBold(text, 6, 10);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleBold(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleBold(text, 5, 10);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleBold(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleBold(text, 4, 10);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleBold(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleBold(text, 6, 11);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleBold(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleBold(text, 5, 11);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleBold(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleBold(text, 4, 11);
+        Assert.Equal("One two three", result.Text);
+    }
+
+    [Fact]
+    public void ItalicToggle_AllPossibleSelections()
+    {
+        string text = "One two three";
+
+        var result = MarkdownTextExtensions.ToggleItalic(text, 4, 7);
+        Assert.Equal("One *two* three", result.Text);
+        text = result.Text;
+
+        result = MarkdownTextExtensions.ToggleItalic(text, 5, 8);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleItalic(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleItalic(text, 4, 8);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleItalic(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleItalic(text, 5, 9);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleItalic(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleItalic(text, 4, 9);
+        Assert.Equal("One two three", result.Text);
+    }
+
+    [Fact]
+    public void StrikethroughToggle_AllPossibleSelections()
+    {
+        string text = "One two three";
+
+        var result = MarkdownTextExtensions.ToggleStrikethrough(text, 4, 7);
+        Assert.Equal("One ~~two~~ three", result.Text);
+        text = result.Text;
+
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, 6, 9);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleStrikethrough(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, 5, 9);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleStrikethrough(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, 4, 9);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleStrikethrough(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, 6, 10);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleStrikethrough(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, 5, 10);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleStrikethrough(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, 4, 10);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleStrikethrough(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, 6, 11);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleStrikethrough(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, 5, 11);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleStrikethrough(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleStrikethrough(text, 4, 11);
+        Assert.Equal("One two three", result.Text);
+    }
+
+    [Fact]
+    public void CodeToggle_AllPossibleSelections()
+    {
+        string text = "One two three";
+
+        var result = MarkdownTextExtensions.ToggleInlineCode(text, 4, 7);
+        Assert.Equal("One `two` three", result.Text);
+        text = result.Text;
+
+        result = MarkdownTextExtensions.ToggleInlineCode(text, 5, 8);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleInlineCode(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleInlineCode(text, 4, 8);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleInlineCode(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleInlineCode(text, 5, 9);
+        Assert.Equal("One two three", result.Text);
+        text = result.Text;
+
+        text = MarkdownTextExtensions.ToggleInlineCode(text, 4, 7).Text;
+        result = MarkdownTextExtensions.ToggleInlineCode(text, 4, 9);
+        Assert.Equal("One two three", result.Text);
+    }
 }

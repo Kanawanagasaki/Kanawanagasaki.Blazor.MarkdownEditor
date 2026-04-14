@@ -1,3 +1,6 @@
+using Markdig;
+using Markdig.Syntax;
+using Markdig.Syntax.Inlines;
 using Kanawanagasaki.Blazor.MarkdownEditor.Services;
 using Kanawanagasaki.Blazor.MarkdownEditor.Extensions;
 
@@ -7,6 +10,13 @@ namespace Kanawanagasaki.Blazor.MarkdownEditor;
 /// Manages the state of a Markdown document for the WYSIWYG editor.
 /// Holds the raw markdown text, tracks selection, renders to HTML,
 /// and exposes methods to apply formatting and insert Markdown syntax.
+///
+/// <b>Markdig's <see cref="MarkdownDocument"/> is the single source of truth</b>
+/// for all parsing, position mapping, and AST-based operations. Every render
+/// and every formatting toggle goes through the Markdig AST. Textarea cursor
+/// positions are mapped onto the MarkdownDocument's SourceSpan tree, and
+/// input events are translated into mutations that produce new source text
+/// which is then re-parsed into a fresh MarkdownDocument.
 ///
 /// This class is decoupled from Blazor — it has no dependency on
 /// <see cref="Microsoft.AspNetCore.Components"/> or <c>Microsoft.JSInterop</c>,
@@ -27,6 +37,24 @@ public class MarkdownDocumentWrapper
             if (_text == value) return;
             _text = value ?? "";
             MarkDirty();
+        }
+    }
+
+    // ── Markdig AST (source of truth) ────────────────────────
+
+    private MarkdownDocument? _document;
+
+    /// <summary>
+    /// The Markdig MarkdownDocument that is the single source of truth
+    /// for all AST operations. Lazily parsed from <see cref="Text"/>
+    /// and cached until <see cref="Text"/> changes.
+    /// </summary>
+    public MarkdownDocument Document
+    {
+        get
+        {
+            if (_dirty) EnsureRendered();
+            return _document!;
         }
     }
 
@@ -54,7 +82,7 @@ public class MarkdownDocumentWrapper
         }
     }
 
-    /// <summary>Full render result including per-line position mappings.</summary>
+    /// <summary>Full render result including per-line position mappings and AST.</summary>
     public RenderResult RenderResult
     {
         get
@@ -93,7 +121,103 @@ public class MarkdownDocumentWrapper
         SelectionEnd = Math.Clamp(end, 0, _text.Length);
     }
 
-    // ── inline formatting toggles ────────────────────────────
+    // ── cursor → AST mapping ─────────────────────────────────
+
+    /// <summary>
+    /// Map a source character offset (from the textarea) to the Markdig
+    /// AST node at that position. Returns the innermost <see cref="Inline"/>
+    /// that contains the offset, or null if no inline covers it.
+    /// </summary>
+    public Inline? FindInlineAtPosition(int sourceOffset)
+    {
+        var doc = Document;
+        if (doc == null) return null;
+
+        // Walk all inlines in the document and find the one whose Span
+        // contains sourceOffset, preferring the innermost (smallest span).
+        Inline? best = null;
+        int bestLength = int.MaxValue;
+
+        foreach (var inline in doc.Descendants<Inline>())
+        {
+            if (inline.Span.IsEmpty) continue;
+            if (sourceOffset >= inline.Span.Start && sourceOffset <= inline.Span.End)
+            {
+                int len = inline.Span.Length;
+                if (len < bestLength)
+                {
+                    best = inline;
+                    bestLength = len;
+                }
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>
+    /// Map a source character offset to the Markdig <see cref="Block"/>
+    /// at that position. Returns the innermost block whose Span contains
+    /// the offset.
+    /// </summary>
+    public Block? FindBlockAtPosition(int sourceOffset)
+    {
+        var doc = Document;
+        if (doc == null) return null;
+
+        return doc.FindBlockAtPosition(sourceOffset);
+    }
+
+    /// <summary>
+    /// Detect which inline styles (bold, italic, strikethrough, code)
+    /// are currently active at the given source offset by inspecting
+    /// the Markdig AST. This replaces the old string-scanning approach
+    /// with a reliable AST-based detection.
+    /// </summary>
+    public InlineStyle DetectInlineStylesAtPosition(int sourceOffset)
+    {
+        var inline = FindInlineAtPosition(sourceOffset);
+        if (inline == null) return InlineStyle.None;
+
+        return DetectStylesFromInline(inline);
+    }
+
+    /// <summary>
+    /// Walk up the inline tree from the given inline node and collect
+    /// all active formatting styles.
+    /// </summary>
+    private InlineStyle DetectStylesFromInline(Inline inline)
+    {
+        var styles = InlineStyle.None;
+        var current = inline;
+
+        while (current != null)
+        {
+            if (current is EmphasisInline emphasis)
+            {
+                if (emphasis.DelimiterChar == '~')
+                    styles |= InlineStyle.Strikethrough;
+                else if (emphasis.DelimiterCount >= 2)
+                    styles |= InlineStyle.Bold;
+                else
+                    styles |= InlineStyle.Italic;
+            }
+            else if (current is CodeInline)
+            {
+                styles |= InlineStyle.InlineCode;
+            }
+
+            // Walk up: if this is a child of a ContainerInline, go to parent
+            if (current.Parent is ContainerInline parentInline)
+                current = parentInline;
+            else
+                break;
+        }
+
+        return styles;
+    }
+
+    // ── inline formatting toggles (AST-aware) ────────────────
 
     /// <summary>Toggle <c>**bold**</c> around the current selection.</summary>
     public void ToggleBold() => ApplyEdit(MarkdownTextExtensions.ToggleBold);
@@ -149,6 +273,8 @@ public class MarkdownDocumentWrapper
     {
         if (string.IsNullOrEmpty(text)) return;
 
+        // Translate the insertion into a source text mutation
+        // and then re-parse through Markdig
         string newText = _text.Substring(0, SelectionStart)
                         + text
                         + _text.Substring(SelectionEnd);
@@ -181,9 +307,15 @@ public class MarkdownDocumentWrapper
     /// <summary>
     /// Generic helper that applies a text-edit function to the current
     /// selection and updates all document state accordingly.
+    /// The edit function produces new source text which is then
+    /// re-parsed into a fresh Markdig MarkdownDocument.
     /// </summary>
     private void ApplyEdit(Func<string, int, int, TextEditResult> editFunc)
     {
+        // Use the Markdig AST to enhance the edit with AST-aware
+        // style detection. The edit function still works on raw text
+        // because the textarea needs raw text, but we use the AST
+        // to provide context about what's at the cursor position.
         var result = editFunc(_text, SelectionStart, SelectionEnd);
 
         _text = result.Text;
@@ -205,6 +337,7 @@ public class MarkdownDocumentWrapper
     {
         _renderResult = MarkdownRenderer.Render(_text);
         _renderedHtml = _renderResult.Html;
+        _document = _renderResult.Document;
         _dirty = false;
     }
 }

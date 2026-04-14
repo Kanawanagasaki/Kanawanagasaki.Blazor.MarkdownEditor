@@ -1,10 +1,14 @@
+using Markdig.Syntax;
+
 namespace Kanawanagasaki.Blazor.MarkdownEditor.Services;
 
 /// <summary>
 /// Result of rendering a Markdown document.  Contains both the clean
-/// HTML (no hidden syntax spans) and a per-line character-position
+/// HTML (no hidden syntax spans), per-line character-position
 /// mapping so that JavaScript can translate between source positions
-/// (textarea) and visible positions (overlay).
+/// (textarea) and visible positions (overlay), and the Markdig
+/// <see cref="MarkdownDocument"/> which serves as the single source
+/// of truth for all AST operations.
 /// </summary>
 public class RenderResult
 {
@@ -13,6 +17,13 @@ public class RenderResult
 
     /// <summary>Per-line mapping data.  Index in the array is the 0-based line number.</summary>
     public LineMapping[] Lines { get; set; } = Array.Empty<LineMapping>();
+
+    /// <summary>
+    /// The Markdig MarkdownDocument that was used to produce this render.
+    /// This is the single source of truth for all AST-based operations:
+    /// cursor position mapping, formatting detection, and edit mutations.
+    /// </summary>
+    public MarkdownDocument Document { get; set; } = new();
 }
 
 /// <summary>

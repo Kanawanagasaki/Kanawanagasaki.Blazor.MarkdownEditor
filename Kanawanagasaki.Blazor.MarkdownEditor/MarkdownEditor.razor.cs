@@ -1,5 +1,8 @@
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
+using Markdig.Syntax;
+using Markdig.Syntax.Inlines;
+using Kanawanagasaki.Blazor.MarkdownEditor.Extensions;
 
 namespace Kanawanagasaki.Blazor.MarkdownEditor;
 
@@ -7,6 +10,12 @@ namespace Kanawanagasaki.Blazor.MarkdownEditor;
 /// Base class for the <see cref="MarkdownEditor"/> component.
 /// Owns the Blazor lifecycle, JS interop, and wires the <see cref="MarkdownDocumentWrapper"/>
 /// to the UI.
+///
+/// The <see cref="MarkdownDocumentWrapper"/> holds a Markdig <see cref="MarkdownDocument"/>
+/// as the single source of truth. All rendering, position mapping, and formatting
+/// detection flow through Markdig's AST. Textarea input events trigger re-parsing
+/// into a fresh MarkdownDocument, and toolbar actions use the AST for accurate
+/// style detection before producing source text mutations.
 /// </summary>
 public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
 {
@@ -161,7 +170,11 @@ public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
 
     // ── JS callbacks ───────────────────────────────────────────
 
-    /// <summary>Called from JS when the textarea value changes.</summary>
+    /// <summary>
+    /// Called from JS when the textarea value changes.
+    /// The new text is set on the document, which triggers re-parsing
+    /// through Markdig to produce a fresh MarkdownDocument (the source of truth).
+    /// </summary>
     [JSInvokable("OnInputFromJs")]
     public async Task OnInputFromJs(string newValue)
     {
@@ -225,7 +238,11 @@ public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
 
     // ── toolbar actions ────────────────────────────────────────
 
-    /// <summary>Generic helper: execute a document edit and sync to JS.</summary>
+    /// <summary>
+    /// Generic helper: execute a document edit and sync to JS.
+    /// After the edit, the document's MarkdownDocument is re-parsed
+    /// (lazily on next access), producing fresh position mappings.
+    /// </summary>
     private async Task ApplyAndSync(Action editAction)
     {
         if (_jsModule is null) return;

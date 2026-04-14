@@ -2,6 +2,7 @@ using Markdig;
 using Markdig.Syntax;
 using Markdig.Syntax.Inlines;
 using Kanawanagasaki.Blazor.MarkdownEditor.Services;
+using Kanawanagasaki.Blazor.MarkdownEditor.Services.EditorAst;
 using Kanawanagasaki.Blazor.MarkdownEditor.Extensions;
 
 namespace Kanawanagasaki.Blazor.MarkdownEditor;
@@ -176,60 +177,34 @@ public class MarkdownDocumentWrapper
     /// </summary>
     public InlineStyle DetectInlineStylesAtPosition(int sourceOffset)
     {
-        var inline = FindInlineAtPosition(sourceOffset);
-        if (inline == null) return InlineStyle.None;
-
-        return DetectStylesFromInline(inline);
+        return MarkdownTextExtensions.DetectInlineStyles(_text, sourceOffset);
     }
+
+    // ── inline formatting toggles (AST-first) ────────────────
 
     /// <summary>
-    /// Walk up the inline tree from the given inline node and collect
-    /// all active formatting styles.
+    /// Toggle <c>**bold**</c> around the current selection.
+    /// Uses Markdig's AST as the primary source of truth for style detection.
     /// </summary>
-    private InlineStyle DetectStylesFromInline(Inline inline)
-    {
-        var styles = InlineStyle.None;
-        var current = inline;
+    public void ToggleBold() => ApplyAstEdit(MarkdownTextExtensions.ToggleBold);
 
-        while (current != null)
-        {
-            if (current is EmphasisInline emphasis)
-            {
-                if (emphasis.DelimiterChar == '~')
-                    styles |= InlineStyle.Strikethrough;
-                else if (emphasis.DelimiterCount >= 2)
-                    styles |= InlineStyle.Bold;
-                else
-                    styles |= InlineStyle.Italic;
-            }
-            else if (current is CodeInline)
-            {
-                styles |= InlineStyle.InlineCode;
-            }
+    /// <summary>
+    /// Toggle <c>*italic*</c> around the current selection.
+    /// Uses Markdig's AST as the primary source of truth for style detection.
+    /// </summary>
+    public void ToggleItalic() => ApplyAstEdit(MarkdownTextExtensions.ToggleItalic);
 
-            // Walk up: if this is a child of a ContainerInline, go to parent
-            if (current.Parent is ContainerInline parentInline)
-                current = parentInline;
-            else
-                break;
-        }
+    /// <summary>
+    /// Toggle <c>~~strikethrough~~</c> around the current selection.
+    /// Uses Markdig's AST as the primary source of truth for style detection.
+    /// </summary>
+    public void ToggleStrikethrough() => ApplyAstEdit(MarkdownTextExtensions.ToggleStrikethrough);
 
-        return styles;
-    }
-
-    // ── inline formatting toggles (AST-aware) ────────────────
-
-    /// <summary>Toggle <c>**bold**</c> around the current selection.</summary>
-    public void ToggleBold() => ApplyEdit(MarkdownTextExtensions.ToggleBold);
-
-    /// <summary>Toggle <c>*italic*</c> around the current selection.</summary>
-    public void ToggleItalic() => ApplyEdit(MarkdownTextExtensions.ToggleItalic);
-
-    /// <summary>Toggle <c>~~strikethrough~~</c> around the current selection.</summary>
-    public void ToggleStrikethrough() => ApplyEdit(MarkdownTextExtensions.ToggleStrikethrough);
-
-    /// <summary>Toggle <c>`inline code`</c> around the current selection.</summary>
-    public void ToggleInlineCode() => ApplyEdit(MarkdownTextExtensions.ToggleInlineCode);
+    /// <summary>
+    /// Toggle <c>`inline code`</c> around the current selection.
+    /// Uses Markdig's AST as the primary source of truth for style detection.
+    /// </summary>
+    public void ToggleInlineCode() => ApplyAstEdit(MarkdownTextExtensions.ToggleInlineCode);
 
     // ── block formatting toggles ─────────────────────────────
 
@@ -305,17 +280,48 @@ public class MarkdownDocumentWrapper
     // ── private helpers ──────────────────────────────────────
 
     /// <summary>
+    /// AST-first inline edit: uses Markdig's MarkdownDocument as the
+    /// primary source of truth for detecting existing styles, then applies the
+    /// toggle. After the edit, the text is immediately re-parsed through
+    /// Markdig to produce a fresh MarkdownDocument.
+    ///
+    /// Flow:
+    /// 1. Selection → map to Markdig AST range (detect styles from AST)
+    /// 2. Apply style change (add/remove markers based on AST detection)
+    /// 3. Extract markdown from the result (text is derived from AST-driven edit)
+    /// 4. Immediately re-parse to keep AST as source of truth
+    /// 5. Fire TextChanged → ValueChanged on the component
+    /// </summary>
+    private void ApplyAstEdit(Func<string, int, int, TextEditResult> editFunc)
+    {
+        // Step 1: Use the current Document (AST) for detection
+        // The editFunc (ToggleBold/Italic/etc.) now uses AST-first detection
+        var result = editFunc(_text, SelectionStart, SelectionEnd);
+
+        // Step 2: Update text and selection
+        _text = result.Text;
+        NewSelectionStart = result.SelectionStart;
+        NewSelectionEnd = result.SelectionEnd;
+        SelectionStart = result.SelectionStart;
+        SelectionEnd = result.SelectionEnd;
+
+        // Step 3: Immediately re-parse to keep AST as source of truth
+        MarkDirty();
+        _ = Document; // Force immediate re-parse
+
+        // Step 4: Notify listeners
+        TextChanged?.Invoke(_text);
+    }
+
+    /// <summary>
     /// Generic helper that applies a text-edit function to the current
     /// selection and updates all document state accordingly.
-    /// The edit function produces new source text which is then
-    /// re-parsed into a fresh Markdig MarkdownDocument.
+    /// Used for block-level operations (headings, lists, blockquotes)
+    /// and insertions where AST-based inline detection isn't needed.
+    /// After the edit, immediately re-parses through Markdig.
     /// </summary>
     private void ApplyEdit(Func<string, int, int, TextEditResult> editFunc)
     {
-        // Use the Markdig AST to enhance the edit with AST-aware
-        // style detection. The edit function still works on raw text
-        // because the textarea needs raw text, but we use the AST
-        // to provide context about what's at the cursor position.
         var result = editFunc(_text, SelectionStart, SelectionEnd);
 
         _text = result.Text;
@@ -324,7 +330,10 @@ public class MarkdownDocumentWrapper
         SelectionStart = result.SelectionStart;
         SelectionEnd = result.SelectionEnd;
 
+        // Immediately re-parse to keep AST as source of truth
         MarkDirty();
+        _ = Document; // Force immediate re-parse
+
         TextChanged?.Invoke(_text);
     }
 

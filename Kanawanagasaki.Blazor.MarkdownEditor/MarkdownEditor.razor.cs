@@ -5,7 +5,7 @@ namespace Kanawanagasaki.Blazor.MarkdownEditor;
 
 /// <summary>
 /// Base class for the <see cref="MarkdownEditor"/> component.
-/// Owns the Blazor lifecycle, JS interop, and wires the <see cref="MarkdownDocument"/>
+/// Owns the Blazor lifecycle, JS interop, and wires the <see cref="MarkdownDocumentWrapper"/>
 /// to the UI.
 /// </summary>
 public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
@@ -52,23 +52,23 @@ public abstract class MarkdownEditorBase : ComponentBase, IAsyncDisposable
     public IDictionary<string, object>? AdditionalAttributes { get; set; }
 
     /// <summary>
-    /// Exposes the <see cref="MarkdownDocument"/> that backs this editor
+    /// Exposes the <see cref="MarkdownDocumentWrapper"/> that backs this editor
     /// so consumers can programmatically apply formatting or inspect state.
     /// </summary>
     [Parameter]
-    public MarkdownDocument? Document { get; set; }
+    public MarkdownDocumentWrapper? Document { get; set; }
 
     /// <summary>
-    /// Callback invoked when the <see cref="MarkdownDocument"/> is first created.
+    /// Callback invoked when the <see cref="MarkdownDocumentWrapper"/> is first created.
     /// Use this to capture a reference and call methods like
-    /// <see cref="MarkdownDocument.ToggleBold"/> from code.
+    /// <see cref="MarkdownDocumentWrapper.ToggleBold"/> from code.
     /// </summary>
     [Parameter]
-    public EventCallback<MarkdownDocument> DocumentCreated { get; set; }
+    public EventCallback<MarkdownDocumentWrapper> DocumentCreated { get; set; }
 
     // ── internal state ─────────────────────────────────────────
 
-    protected MarkdownDocument _document = new();
+    protected MarkdownDocumentWrapper _document = new();
     private bool _jsReady;
     private bool _externalValueChange;
     private bool _pendingMappingPush;

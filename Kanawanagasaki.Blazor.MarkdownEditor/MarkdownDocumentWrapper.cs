@@ -12,7 +12,7 @@ namespace Kanawanagasaki.Blazor.MarkdownEditor;
 /// <see cref="Microsoft.AspNetCore.Components"/> or <c>Microsoft.JSInterop</c>,
 /// making it easy to test and reuse outside of the editor component.
 /// </summary>
-public class MarkdownDocument
+public class MarkdownDocumentWrapper
 {
     // ── text state ───────────────────────────────────────────
 
@@ -75,10 +75,10 @@ public class MarkdownDocument
     // ── constructor ──────────────────────────────────────────
 
     /// <summary>Creates a new empty document.</summary>
-    public MarkdownDocument() { }
+    public MarkdownDocumentWrapper() { }
 
     /// <summary>Creates a document with initial content.</summary>
-    public MarkdownDocument(string initialText)
+    public MarkdownDocumentWrapper(string initialText)
     {
         _text = initialText ?? "";
         MarkDirty();

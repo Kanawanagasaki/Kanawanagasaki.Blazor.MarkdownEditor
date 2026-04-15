@@ -104,6 +104,8 @@ public static class EditorDocumentEditor
 
     /// <summary>
     /// Map a (blockIndex, contentCharOffset) to an absolute position in the rendered markdown.
+    /// The returned position points to the content character at the given offset,
+    /// which is after any opening markers for the segment containing that character.
     /// </summary>
     public static int MapContentToPosition(EditorDocument doc, int blockIndex, int contentOffset)
     {
@@ -121,39 +123,37 @@ public static class EditorDocumentEditor
         int prefixLen = EditorDocumentRenderer.GetBlockPrefixLength(doc.Blocks[blockIndex]);
         pos += prefixLen;
 
-        // Use the delta renderer to compute the position
         var segments = doc.Blocks[blockIndex].Segments;
-        var sb = new StringBuilder();
-
         InlineStyle currentStyles = InlineStyle.None;
         int remaining = contentOffset;
 
         foreach (var seg in segments)
         {
-            if (remaining <= 0)
-                break;
-
+            // Always compute transition markers BEFORE checking remaining,
+            // because the content position must be after the opening markers
+            // of the segment that contains the target content character.
             if (seg.Styles != currentStyles)
             {
-                sb.Append(EditorDocumentRenderer.ComputeTransitionMarkers(currentStyles, seg.Styles));
+                string transition = EditorDocumentRenderer.ComputeTransitionMarkers(currentStyles, seg.Styles);
+                pos += transition.Length;
                 currentStyles = seg.Styles;
             }
 
+            if (remaining <= 0)
+                break;
+
             if (remaining <= seg.Text.Length)
             {
-                sb.Append(seg.Text.Substring(0, remaining));
+                pos += remaining;
                 remaining = 0;
                 break;
             }
 
-            sb.Append(seg.Text);
+            pos += seg.Text.Length;
             remaining -= seg.Text.Length;
         }
 
-        // If there's remaining offset, we're past the end of content
-        // (the closing markers will be after the last segment's text)
-
-        return pos + sb.Length;
+        return pos;
     }
 
     // ── Inline style toggles ───────────────────────────────────────────
@@ -218,9 +218,20 @@ public static class EditorDocumentEditor
         bool styleActive = IsStyleActiveOnRange(block.Segments, contentStart, contentEnd, styleToToggle);
 
         if (styleActive)
-            RemoveStyleFromRange(block.Segments, contentStart, contentEnd, styleToToggle);
+        {
+            // Expand to full marker region: when toggling OFF, remove the style
+            // from ALL segments in the contiguous styled region, not just the selection.
+            // This matches user expectation: select part of a bold word → entire word loses bold.
+            var expandedRange = ExpandToMarkerRegion(block.Segments, contentStart, contentEnd, styleToToggle);
+            RemoveStyleFromRange(block.Segments, expandedRange.Start, expandedRange.End, styleToToggle);
+            // Update content range to expanded range for selection computation
+            contentStart = expandedRange.Start;
+            contentEnd = expandedRange.End;
+        }
         else
+        {
             AddStyleToRange(block.Segments, contentStart, contentEnd, styleToToggle);
+        }
 
         // Split whitespace at style boundaries for correct rendering
         SplitWhitespaceAtStyleBoundaries(block.Segments);
@@ -278,6 +289,64 @@ public static class EditorDocumentEditor
         };
     }
 
+    /// <summary>
+    /// Expand the content range to cover the full marker region for a style.
+    /// When toggling OFF, if any part of the selection is within a styled segment,
+    /// expand to include ALL contiguous segments with that style.
+    /// This ensures: selecting "wor" in ~~***`hello world`***~~ and toggling bold
+    /// removes bold from the entire "hello world" region.
+    /// </summary>
+    private static (int Start, int End) ExpandToMarkerRegion(
+        List<EditorInlineSegment> segments, int contentStart, int contentEnd, InlineStyle style)
+    {
+        int expandedStart = contentStart;
+        int expandedEnd = contentEnd;
+
+        int pos = 0;
+        for (int i = 0; i < segments.Count; i++)
+        {
+            var seg = segments[i];
+            int segStart = pos;
+            int segEnd = pos + seg.Text.Length;
+
+            if (segEnd > contentStart && segStart < contentEnd && (seg.Styles & style) != 0)
+            {
+                expandedStart = Math.Min(expandedStart, segStart);
+                expandedEnd = Math.Max(expandedEnd, segEnd);
+            }
+
+            pos += seg.Text.Length;
+        }
+
+        // Expand further to include any adjacent segments with the same style
+        // that form a contiguous styled region
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            pos = 0;
+            for (int i = 0; i < segments.Count; i++)
+            {
+                var seg = segments[i];
+                int segStart = pos;
+                int segEnd = pos + seg.Text.Length;
+
+                if ((seg.Styles & style) != 0)
+                {
+                    if (segStart <= expandedEnd && segEnd >= expandedStart)
+                    {
+                        if (segStart < expandedStart) { expandedStart = segStart; changed = true; }
+                        if (segEnd > expandedEnd) { expandedEnd = segEnd; changed = true; }
+                    }
+                }
+
+                pos += seg.Text.Length;
+            }
+        }
+
+        return (expandedStart, expandedEnd);
+    }
+
     // ── Segment manipulation ───────────────────────────────────────────
 
     private static int GetContentLength(List<EditorInlineSegment> segments)
@@ -291,34 +360,27 @@ public static class EditorDocumentEditor
         int contentStart, int contentEnd, InlineStyle style)
     {
         int pos = 0;
-        bool anyInRange = false;
-        foreach (var seg in segments)
-        {
-            int segStart = pos;
-            int segEnd = pos + seg.Text.Length;
-            if (segEnd > contentStart && segStart < contentEnd)
-            {
-                anyInRange = true;
-                if ((seg.Styles & style) == 0)
-                    return false;
-            }
-            pos += seg.Text.Length;
-        }
-        if (!anyInRange) return false;
+        bool anyNonWsInRange = false;
+        bool allNonWsHaveStyle = true;
 
-        pos = 0;
         foreach (var seg in segments)
         {
             int segStart = pos;
             int segEnd = pos + seg.Text.Length;
             if (segEnd > contentStart && segStart < contentEnd)
             {
-                if ((seg.Styles & style) != 0)
-                    return true;
+                bool isWsOnly = seg.Text.Trim().Length == 0;
+                if (!isWsOnly)
+                {
+                    anyNonWsInRange = true;
+                    if ((seg.Styles & style) == 0)
+                        allNonWsHaveStyle = false;
+                }
             }
             pos += seg.Text.Length;
         }
-        return false;
+
+        return anyNonWsInRange && allNonWsHaveStyle;
     }
 
     private static void AddStyleToRange(List<EditorInlineSegment> segments,
@@ -402,33 +464,40 @@ public static class EditorDocumentEditor
 
     /// <summary>
     /// After applying styles, split whitespace at style boundaries.
-    /// Only split when there's a "nesting conflict" - i.e., when transitioning
-    /// between segments where one has a style that the other doesn't AND
-    /// they also share some styles. This creates an overlapping situation
-    /// that requires whitespace to be outside the markers.
+    /// Split when there's a "nesting conflict" - i.e., when transitioning
+    /// between segments where styles change in a way that requires markers
+    /// to be closed and reopened. This includes:
+    /// 1. Bidirectional conflicts: both adding and removing styles (A|B ↔ A|C)
+    /// 2. Unidirectional conflicts: removing a style while keeping shared styles
+    ///    (e.g., A|B → A, where closing B requires temporarily closing A)
     ///
-    /// We do NOT split when going from style A to style A|B (just adding a style)
-    /// because the delta renderer handles that correctly by just adding the inner marker.
+    /// The whitespace split ensures that spaces between words fall outside
+    /// the style markers, allowing the delta renderer to produce correct nesting.
     /// </summary>
-    private static void SplitWhitespaceAtStyleBoundaries(List<EditorInlineSegment> segments)
+    internal static void SplitWhitespaceAtStyleBoundaries(List<EditorInlineSegment> segments)
     {
+
         for (int i = 0; i < segments.Count; i++)
         {
             var seg = segments[i];
+
             if (seg.Styles == InlineStyle.None || string.IsNullOrEmpty(seg.Text))
                 continue;
 
-            // Check previous segment - only split if there's a nesting conflict
+            // Check previous segment - split if there's a nesting conflict
             if (i > 0)
             {
                 var prevStyles = segments[i - 1].Styles;
                 // A nesting conflict occurs when:
-                // - Previous segment has a style that current doesn't
-                // - Current segment has a style that previous doesn't
-                // This means styles overlap but neither contains the other.
+                // 1. Bidirectional: both segments have styles the other doesn't (A|B ↔ A|C)
+                // 2. Unidirectional: previous has a style current doesn't, AND they share
+                //    styles (e.g., Bold|Italic → Italic: closing Bold requires temporarily
+                //    closing Italic, so whitespace must be outside the markers)
                 var onlyInPrev = prevStyles & ~seg.Styles;
                 var onlyInCur = seg.Styles & ~prevStyles;
-                bool hasConflict = onlyInPrev != InlineStyle.None && onlyInCur != InlineStyle.None;
+                var shared = prevStyles & seg.Styles;
+                bool hasConflict = (onlyInPrev != InlineStyle.None && onlyInCur != InlineStyle.None)
+                    || (onlyInPrev != InlineStyle.None && shared != InlineStyle.None);
 
                 if (hasConflict)
                 {
@@ -452,13 +521,15 @@ public static class EditorDocumentEditor
             if (i >= segments.Count) break;
             seg = segments[i];
 
-            // Check next segment - only split if there's a nesting conflict
+            // Check next segment - split if there's a nesting conflict
             if (i < segments.Count - 1)
             {
                 var nextStyles = segments[i + 1].Styles;
                 var onlyInCur = seg.Styles & ~nextStyles;
                 var onlyInNext = nextStyles & ~seg.Styles;
-                bool hasConflict = onlyInCur != InlineStyle.None && onlyInNext != InlineStyle.None;
+                var shared = seg.Styles & nextStyles;
+                bool hasConflict = (onlyInCur != InlineStyle.None && onlyInNext != InlineStyle.None)
+                    || (onlyInCur != InlineStyle.None && shared != InlineStyle.None);
 
                 if (hasConflict)
                 {

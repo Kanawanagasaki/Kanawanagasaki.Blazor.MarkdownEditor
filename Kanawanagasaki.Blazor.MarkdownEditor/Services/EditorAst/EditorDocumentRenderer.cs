@@ -141,6 +141,8 @@ public static class EditorDocumentRenderer
     /// Determine which currently-open styles need to be temporarily closed
     /// because an outer style is being closed.
     /// Nesting order (outer to inner): Strikethrough → Bold|Italic → Code
+    /// When closing a style while inner styles should remain open, those inner
+    /// styles must be temporarily closed and reopened after the outer is closed.
     /// </summary>
     private static InlineStyle ComputeTemporaryCloses(InlineStyle currentStyles, InlineStyle targetStyles, InlineStyle toClose)
     {
@@ -152,9 +154,26 @@ public static class EditorDocumentRenderer
             temp |= currentStyles & ~toClose & ~InlineStyle.Strikethrough;
         }
 
-        // If closing Bold or Italic, must close Code if it should stay open
+        // If closing Bold or Italic, must handle inner style conflicts
         if ((toClose & (InlineStyle.Bold | InlineStyle.Italic)) != 0)
         {
+            // If closing Bold while Italic should stay open, must temporarily close Italic
+            if ((toClose & InlineStyle.Bold) != 0
+                && (currentStyles & InlineStyle.Italic) != 0
+                && (targetStyles & InlineStyle.Italic) != 0)
+            {
+                temp |= InlineStyle.Italic;
+            }
+
+            // If closing Italic while Bold should stay open, must temporarily close Bold
+            if ((toClose & InlineStyle.Italic) != 0
+                && (currentStyles & InlineStyle.Bold) != 0
+                && (targetStyles & InlineStyle.Bold) != 0)
+            {
+                temp |= InlineStyle.Bold;
+            }
+
+            // If closing Bold/Italic while Code should stay, must temporarily close Code
             if ((currentStyles & InlineStyle.InlineCode) != 0 && (targetStyles & InlineStyle.InlineCode) != 0)
             {
                 temp |= InlineStyle.InlineCode;

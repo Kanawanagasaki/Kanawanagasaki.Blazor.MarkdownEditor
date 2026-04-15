@@ -1,23 +1,31 @@
-using Markdig;
 using Markdig.Syntax;
 using Markdig.Syntax.Inlines;
 using Kanawanagasaki.Blazor.MarkdownEditor.Services;
 using Kanawanagasaki.Blazor.MarkdownEditor.Services.EditorAst;
-using Kanawanagasaki.Blazor.MarkdownEditor.Extensions;
 
 namespace Kanawanagasaki.Blazor.MarkdownEditor;
 
 /// <summary>
 /// Manages the state of a Markdown document for the WYSIWYG editor.
-/// Holds the raw markdown text, tracks selection, renders to HTML,
-/// and exposes methods to apply formatting and insert Markdown syntax.
 ///
-/// <b>Markdig's <see cref="MarkdownDocument"/> is the single source of truth</b>
-/// for all parsing, position mapping, and AST-based operations. Every render
-/// and every formatting toggle goes through the Markdig AST. Textarea cursor
-/// positions are mapped onto the MarkdownDocument's SourceSpan tree, and
-/// input events are translated into mutations that produce new source text
-/// which is then re-parsed into a fresh MarkdownDocument.
+/// <b>The <see cref="EditorDocument"/> AST is the SINGLE SOURCE OF TRUTH.</b>
+/// All editing operations (toggle bold, change block type, etc.) mutate the
+/// AST directly. Markdown text is ONLY DERIVED from the AST as the final step
+/// via <see cref="EditorDocumentRenderer.Render"/>. The textarea is then
+/// populated with the derived text.
+///
+/// Flow:
+/// 1. Textarea selection maps to AST range (EditorDocument positions)
+/// 2. Mutate AST directly (toggle style flags on EditorInlineSegment,
+///    change block types, etc.)
+/// 3. Extract markdown from AST via EditorDocumentRenderer.Render()
+/// 4. Populate textarea with the derived text
+/// 5. Adjust cursor
+/// 6. Raise ValueChanged callback
+///
+/// When <see cref="Text"/> is set externally (from textarea input), the text
+/// is parsed into the AST via <see cref="EditorDocumentParser.Parse"/> so that
+/// the AST remains the authoritative state for subsequent operations.
 ///
 /// This class is decoupled from Blazor — it has no dependency on
 /// <see cref="Microsoft.AspNetCore.Components"/> or <c>Microsoft.JSInterop</c>,
@@ -25,11 +33,15 @@ namespace Kanawanagasaki.Blazor.MarkdownEditor;
 /// </summary>
 public class MarkdownDocumentWrapper
 {
-    // ── text state ───────────────────────────────────────────
+    // ── AST state (SINGLE SOURCE OF TRUTH) ────────────────────
+
+    private EditorDocument _editorDoc = new();
+
+    // ── text state (derived from AST) ────────────────────────
 
     private string _text = "";
 
-    /// <summary>Current raw Markdown source text.</summary>
+    /// <summary>Current raw Markdown source text (derived from the AST).</summary>
     public string Text
     {
         get => _text;
@@ -37,18 +49,20 @@ public class MarkdownDocumentWrapper
         {
             if (_text == value) return;
             _text = value ?? "";
+            // Parse external text into the AST so it becomes the source of truth
+            _editorDoc = EditorDocumentParser.Parse(_text);
             MarkDirty();
         }
     }
 
-    // ── Markdig AST (source of truth) ────────────────────────
+    // ── Markdig AST (derived from render for backward compat) ─
 
     private MarkdownDocument? _document;
 
     /// <summary>
-    /// The Markdig MarkdownDocument that is the single source of truth
-    /// for all AST operations. Lazily parsed from <see cref="Text"/>
-    /// and cached until <see cref="Text"/> changes.
+    /// The Markdig MarkdownDocument derived from the render result.
+    /// Kept for backward compatibility with <see cref="FindInlineAtPosition"/>
+    /// and <see cref="FindBlockAtPosition"/>.
     /// </summary>
     public MarkdownDocument Document
     {
@@ -73,7 +87,7 @@ public class MarkdownDocumentWrapper
     private RenderResult _renderResult = new();
     private string _renderedHtml = "";
 
-    /// <summary>Rendered HTML for the overlay (cached until <see cref="Text"/> changes).</summary>
+    /// <summary>Rendered HTML for the overlay (cached until the AST changes).</summary>
     public string RenderedHtml
     {
         get
@@ -110,6 +124,7 @@ public class MarkdownDocumentWrapper
     public MarkdownDocumentWrapper(string initialText)
     {
         _text = initialText ?? "";
+        _editorDoc = EditorDocumentParser.Parse(_text);
         MarkDirty();
     }
 
@@ -172,89 +187,110 @@ public class MarkdownDocumentWrapper
     /// <summary>
     /// Detect which inline styles (bold, italic, strikethrough, code)
     /// are currently active at the given source offset by inspecting
-    /// the Markdig AST. This replaces the old string-scanning approach
-    /// with a reliable AST-based detection.
+    /// the <see cref="EditorDocument"/> AST directly — no re-parsing
+    /// through Markdig.
     /// </summary>
     public InlineStyle DetectInlineStylesAtPosition(int sourceOffset)
     {
-        return MarkdownTextExtensions.DetectInlineStyles(_text, sourceOffset);
+        if (_editorDoc.Blocks.Count == 0) return InlineStyle.None;
+
+        var (blockIdx, contentOffset) = EditorDocumentEditor.MapPositionToContent(_editorDoc, sourceOffset);
+        if (blockIdx >= _editorDoc.Blocks.Count) return InlineStyle.None;
+
+        var block = _editorDoc.Blocks[blockIdx];
+        if (!block.HasInlineContent || block.Segments.Count == 0) return InlineStyle.None;
+
+        // Find the segment that contains the content offset
+        int pos = 0;
+        for (int i = 0; i < block.Segments.Count; i++)
+        {
+            var seg = block.Segments[i];
+            if (contentOffset < pos + seg.Text.Length)
+                return seg.Styles;
+            pos += seg.Text.Length;
+        }
+
+        // Offset at or past the end of content
+        return InlineStyle.None;
     }
 
     // ── inline formatting toggles (AST-first) ────────────────
 
     /// <summary>
     /// Toggle <c>**bold**</c> around the current selection.
-    /// Uses Markdig's AST as the primary source of truth for style detection.
+    /// Mutates the <see cref="EditorDocument"/> AST directly.
     /// </summary>
-    public void ToggleBold() => ApplyAstEdit(MarkdownTextExtensions.ToggleBold);
+    public void ToggleBold() => ApplyAstEdit(EditorDocumentEditor.ToggleBold);
 
     /// <summary>
     /// Toggle <c>*italic*</c> around the current selection.
-    /// Uses Markdig's AST as the primary source of truth for style detection.
+    /// Mutates the <see cref="EditorDocument"/> AST directly.
     /// </summary>
-    public void ToggleItalic() => ApplyAstEdit(MarkdownTextExtensions.ToggleItalic);
+    public void ToggleItalic() => ApplyAstEdit(EditorDocumentEditor.ToggleItalic);
 
     /// <summary>
     /// Toggle <c>~~strikethrough~~</c> around the current selection.
-    /// Uses Markdig's AST as the primary source of truth for style detection.
+    /// Mutates the <see cref="EditorDocument"/> AST directly.
     /// </summary>
-    public void ToggleStrikethrough() => ApplyAstEdit(MarkdownTextExtensions.ToggleStrikethrough);
+    public void ToggleStrikethrough() => ApplyAstEdit(EditorDocumentEditor.ToggleStrikethrough);
 
     /// <summary>
     /// Toggle <c>`inline code`</c> around the current selection.
-    /// Uses Markdig's AST as the primary source of truth for style detection.
+    /// Mutates the <see cref="EditorDocument"/> AST directly.
     /// </summary>
-    public void ToggleInlineCode() => ApplyAstEdit(MarkdownTextExtensions.ToggleInlineCode);
+    public void ToggleInlineCode() => ApplyAstEdit(EditorDocumentEditor.ToggleInlineCode);
 
     // ── block formatting toggles ─────────────────────────────
 
     /// <summary>Toggle an ATX heading prefix on the current line(s).</summary>
     /// <param name="level">Heading level 1-6.</param>
     public void ToggleHeading(int level)
-        => ApplyEdit((text, start, end) => MarkdownTextExtensions.ToggleHeading(text, start, end, level));
+        => ApplyAstEdit((doc, start, end) => EditorDocumentEditor.ToggleHeading(doc, start, end, level));
 
     /// <summary>Toggle unordered list prefix on the current line(s).</summary>
     public void ToggleUnorderedList()
-        => ApplyEdit(MarkdownTextExtensions.ToggleUnorderedList);
+        => ApplyAstEdit(EditorDocumentEditor.ToggleUnorderedList);
 
     /// <summary>Toggle ordered list prefix on the current line(s).</summary>
     public void ToggleOrderedList()
-        => ApplyEdit(MarkdownTextExtensions.ToggleOrderedList);
+        => ApplyAstEdit(EditorDocumentEditor.ToggleOrderedList);
 
     /// <summary>Toggle blockquote prefix on the current line(s).</summary>
     public void ToggleBlockquote()
-        => ApplyEdit(MarkdownTextExtensions.ToggleBlockquote);
+        => ApplyAstEdit(EditorDocumentEditor.ToggleBlockquote);
 
     // ── insertions ───────────────────────────────────────────
 
     /// <summary>Insert a Markdown link at the current selection.</summary>
     public void InsertLink()
-        => ApplyEdit(MarkdownTextExtensions.InsertLink);
+        => ApplyAstEdit(EditorDocumentEditor.InsertLink);
 
     /// <summary>Insert a Markdown image at the current selection.</summary>
     public void InsertImage()
-        => ApplyEdit(MarkdownTextExtensions.InsertImage);
+        => ApplyAstEdit(EditorDocumentEditor.InsertImage);
 
     /// <summary>Insert a fenced code block around the current selection.</summary>
     public void InsertCodeBlock()
-        => ApplyEdit(MarkdownTextExtensions.InsertCodeBlock);
+        => ApplyAstEdit(EditorDocumentEditor.InsertCodeBlock);
 
     /// <summary>Insert a horizontal rule at the current position.</summary>
     public void InsertHorizontalRule()
-        => ApplyEdit(MarkdownTextExtensions.InsertHorizontalRule);
+        => ApplyAstEdit(EditorDocumentEditor.InsertHorizontalRule);
 
     /// <summary>Insert arbitrary text at the current caret position.</summary>
     public void InsertText(string text)
     {
         if (string.IsNullOrEmpty(text)) return;
 
-        // Translate the insertion into a source text mutation
-        // and then re-parse through Markdig
-        string newText = _text.Substring(0, SelectionStart)
+        // Derive current markdown from the AST, apply insertion, then re-parse
+        string currentMd = EditorDocumentRenderer.Render(_editorDoc);
+        string newText = currentMd.Substring(0, SelectionStart)
                         + text
-                        + _text.Substring(SelectionEnd);
+                        + currentMd.Substring(SelectionEnd);
         int newPos = SelectionStart + text.Length;
 
+        // Re-parse into the AST to keep it as the single source of truth
+        _editorDoc = EditorDocumentParser.Parse(newText);
         _text = newText;
         SelectionStart = newPos;
         SelectionEnd = newPos;
@@ -280,60 +316,46 @@ public class MarkdownDocumentWrapper
     // ── private helpers ──────────────────────────────────────
 
     /// <summary>
-    /// AST-first inline edit: uses Markdig's MarkdownDocument as the
-    /// primary source of truth for detecting existing styles, then applies the
-    /// toggle. After the edit, the text is immediately re-parsed through
-    /// Markdig to produce a fresh MarkdownDocument.
+    /// AST-first edit: mutates <see cref="_editorDoc"/> directly via
+    /// <see cref="EditorDocumentEditor"/> methods, then derives the markdown
+    /// text from the mutated AST.
     ///
     /// Flow:
-    /// 1. Selection → map to Markdig AST range (detect styles from AST)
-    /// 2. Apply style change (add/remove markers based on AST detection)
-    /// 3. Extract markdown from the result (text is derived from AST-driven edit)
-    /// 4. Immediately re-parse to keep AST as source of truth
+    /// 1. Selection → map to AST range via EditorDocumentEditor
+    /// 2. Mutate AST directly (toggle style flags, change block types, etc.)
+    /// 3. Extract markdown from AST via EditorDocumentRenderer.Render()
+    /// 4. Re-parse into _editorDoc to keep AST as single source of truth
+    ///    (for operations that only modify text, like no-selection marker
+    ///    insertion or link insertion)
     /// 5. Fire TextChanged → ValueChanged on the component
     /// </summary>
-    private void ApplyAstEdit(Func<string, int, int, TextEditResult> editFunc)
+    private void ApplyAstEdit(Func<EditorDocument, int, int, TextEditResult> editFunc)
     {
-        // Step 1: Use the current Document (AST) for detection
-        // The editFunc (ToggleBold/Italic/etc.) now uses AST-first detection
-        var result = editFunc(_text, SelectionStart, SelectionEnd);
+        // Step 1-2: Apply edit on _editorDoc (mutates AST directly for
+        // style toggles; returns text-only result for insertions/no-selection)
+        var result = editFunc(_editorDoc, SelectionStart, SelectionEnd);
 
-        // Step 2: Update text and selection
+        // Step 3: Derive text from the result
         _text = result.Text;
+
+        // Step 4: Re-parse to keep _editorDoc as the single source of truth.
+        // For AST-mutating edits (style toggles with selection), this produces
+        // an equivalent AST. For text-only edits (no-selection marker insertion,
+        // link insertion), re-parsing is necessary because _editorDoc wasn't
+        // mutated to reflect the new text.
+        _editorDoc = EditorDocumentParser.Parse(_text);
+
+        // Step 5: Update selection positions
         NewSelectionStart = result.SelectionStart;
         NewSelectionEnd = result.SelectionEnd;
         SelectionStart = result.SelectionStart;
         SelectionEnd = result.SelectionEnd;
 
-        // Step 3: Immediately re-parse to keep AST as source of truth
+        // Step 6: Mark dirty for HTML re-rendering
         MarkDirty();
-        _ = Document; // Force immediate re-parse
+        _ = Document; // Force immediate re-render
 
-        // Step 4: Notify listeners
-        TextChanged?.Invoke(_text);
-    }
-
-    /// <summary>
-    /// Generic helper that applies a text-edit function to the current
-    /// selection and updates all document state accordingly.
-    /// Used for block-level operations (headings, lists, blockquotes)
-    /// and insertions where AST-based inline detection isn't needed.
-    /// After the edit, immediately re-parses through Markdig.
-    /// </summary>
-    private void ApplyEdit(Func<string, int, int, TextEditResult> editFunc)
-    {
-        var result = editFunc(_text, SelectionStart, SelectionEnd);
-
-        _text = result.Text;
-        NewSelectionStart = result.SelectionStart;
-        NewSelectionEnd = result.SelectionEnd;
-        SelectionStart = result.SelectionStart;
-        SelectionEnd = result.SelectionEnd;
-
-        // Immediately re-parse to keep AST as source of truth
-        MarkDirty();
-        _ = Document; // Force immediate re-parse
-
+        // Step 7: Notify listeners
         TextChanged?.Invoke(_text);
     }
 
@@ -344,7 +366,7 @@ public class MarkdownDocumentWrapper
 
     private void EnsureRendered()
     {
-        _renderResult = MarkdownRenderer.Render(_text);
+        _renderResult = EditorDocumentHtmlRenderer.Render(_editorDoc);
         _renderedHtml = _renderResult.Html;
         _document = _renderResult.Document;
         _dirty = false;

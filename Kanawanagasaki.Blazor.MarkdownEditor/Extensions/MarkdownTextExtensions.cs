@@ -97,9 +97,22 @@ public static class MarkdownTextExtensions
         // Parse text → EditorDocument
         var doc = EditorDocumentParser.Parse(text);
 
-        // Map selection → AST positions
-        var (startBlock, startOffset) = MapPositionToContent(doc, selStart);
-        var (endBlock, endOffset) = MapPositionToContent(doc, selEnd);
+        // Normalize whitespace at style boundaries in all blocks.
+        // When Markdig re-parses markdown like "*** *four*", the space between
+        // markers may be included inside the styled segment. Splitting it ensures
+        // correct delta rendering and position mapping.
+        foreach (var block in doc.Blocks)
+        {
+            if (block.HasInlineContent && block.Segments.Count > 0)
+            {
+                EditorDocumentEditor.SplitWhitespaceAtStyleBoundaries(block.Segments);
+                EditorDocument.NormalizeSegments(block.Segments);
+            }
+        }
+
+        // Map selection → AST positions (using delta renderer for correct positions)
+        var (startBlock, startOffset) = EditorDocumentEditor.MapPositionToContent(doc, selStart);
+        var (endBlock, endOffset) = EditorDocumentEditor.MapPositionToContent(doc, selEnd);
 
         if (startBlock != endBlock)
         {
@@ -152,13 +165,15 @@ public static class MarkdownTextExtensions
             AddStyleToRange(block.Segments, contentStart, contentEnd, styleToToggle);
         }
 
+        // Split whitespace at style boundaries for correct rendering of overlapping styles
+        EditorDocumentEditor.SplitWhitespaceAtStyleBoundaries(block.Segments);
         EditorDocument.NormalizeSegments(block.Segments);
-
+        
         string renderedMd = EditorDocumentRenderer.Render(doc);
 
-        // Compute content-based selection positions for single-block
-        int newSelStart = MapContentToMdPosition(doc, blockIndex, contentStart);
-        int newSelEnd = MapContentToMdPosition(doc, blockIndex, contentEnd);
+        // Compute content-based selection positions for single-block (using delta renderer)
+        int newSelStart = EditorDocumentEditor.MapContentToPosition(doc, blockIndex, contentStart);
+        int newSelEnd = EditorDocumentEditor.MapContentToPosition(doc, blockIndex, contentEnd);
 
         return new TextEditResult
         {
@@ -197,6 +212,7 @@ public static class MarkdownTextExtensions
             else
                 AddStyleToRange(block.Segments, segStart, segEnd, styleToToggle);
 
+            EditorDocumentEditor.SplitWhitespaceAtStyleBoundaries(block.Segments);
             EditorDocument.NormalizeSegments(block.Segments);
         }
 
@@ -470,39 +486,40 @@ public static class MarkdownTextExtensions
         return (expandedStart, expandedEnd);
     }
 
+    /// <summary>
+    /// Check if a style is "active" on the given content range.
+    /// A style is considered active (should be toggled OFF) only if ALL
+    /// non-whitespace segments in the range have it. If only SOME non-whitespace
+    /// segments have the style, it's considered inactive (should be toggled ON
+    /// to expand coverage to the full selection).
+    /// Whitespace-only segments are ignored.
+    /// </summary>
     private static bool IsStyleActiveOnRange(List<EditorInlineSegment> segments,
         int contentStart, int contentEnd, InlineStyle style)
     {
         int pos = 0;
-        bool anyInRange = false;
-        foreach (var seg in segments)
-        {
-            int segStart = pos;
-            int segEnd = pos + seg.Text.Length;
-            if (segEnd > contentStart && segStart < contentEnd)
-            {
-                anyInRange = true;
-                if ((seg.Styles & style) == 0)
-                    return false;
-            }
-            pos += seg.Text.Length;
-        }
-        if (!anyInRange) return false;
+        bool anyNonWsInRange = false;
+        bool allNonWsHaveStyle = true;
 
-        // Also check if ANY segment has the style
-        pos = 0;
         foreach (var seg in segments)
         {
             int segStart = pos;
             int segEnd = pos + seg.Text.Length;
             if (segEnd > contentStart && segStart < contentEnd)
             {
-                if ((seg.Styles & style) != 0)
-                    return true;
+                bool isWsOnly = seg.Text.Trim().Length == 0;
+                if (!isWsOnly)
+                {
+                    anyNonWsInRange = true;
+                    if ((seg.Styles & style) == 0)
+                        allNonWsHaveStyle = false;
+                }
             }
             pos += seg.Text.Length;
         }
-        return false;
+
+        // Only consider the style "active" (for toggle-off) if ALL non-WS content has it
+        return anyNonWsInRange && allNonWsHaveStyle;
     }
 
     private static void AddStyleToRange(List<EditorInlineSegment> segments,
@@ -748,11 +765,14 @@ public static class MarkdownTextExtensions
         string selected = start < end ? text.Substring(start, end - start) : "link text";
         string insertion = $"[{selected}](url)";
         string newMd = text.Substring(0, start) + insertion + text.Substring(end);
+        // Select the "url" part so the user can immediately type to replace it
+        int urlStart = start + 1 + selected.Length + 2; // after "[selected]("
+        int urlEnd = urlStart + 3; // length of "url"
         return new TextEditResult
         {
             Text = newMd,
-            SelectionStart = start + 1,
-            SelectionEnd = start + 1 + selected.Length,
+            SelectionStart = urlStart,
+            SelectionEnd = urlEnd,
         };
     }
 
@@ -761,11 +781,14 @@ public static class MarkdownTextExtensions
         string selected = start < end ? text.Substring(start, end - start) : "alt text";
         string insertion = $"![{selected}](url)";
         string newMd = text.Substring(0, start) + insertion + text.Substring(end);
+        // Select the "url" part so the user can immediately type to replace it
+        int urlStart = start + 2 + selected.Length + 2; // after "![selected]("
+        int urlEnd = urlStart + 3; // length of "url"
         return new TextEditResult
         {
             Text = newMd,
-            SelectionStart = start + 2,
-            SelectionEnd = start + 2 + selected.Length,
+            SelectionStart = urlStart,
+            SelectionEnd = urlEnd,
         };
     }
 
@@ -784,12 +807,34 @@ public static class MarkdownTextExtensions
 
     public static TextEditResult InsertHorizontalRule(string text, int start, int end)
     {
-        string newMd = text.Substring(0, start) + "---" + text.Substring(end);
-        return new TextEditResult
+        // Find the boundaries of the current line
+        int lineStart = start > 0 ? text.LastIndexOf('\n', start - 1) + 1 : 0;
+        int lineEnd = text.IndexOf('\n', start);
+        if (lineEnd == -1) lineEnd = text.Length;
+
+        string lineContent = text.Substring(lineStart, lineEnd - lineStart).Trim();
+
+        if (lineContent.Length > 0)
         {
-            Text = newMd,
-            SelectionStart = start + 3,
-            SelectionEnd = start + 3,
-        };
+            // Line has content: insert HR on a new line after the current line
+            string newMd = text.Substring(0, lineEnd) + "\n---" + text.Substring(lineEnd);
+            return new TextEditResult
+            {
+                Text = newMd,
+                SelectionStart = lineEnd + 4,
+                SelectionEnd = lineEnd + 4,
+            };
+        }
+        else
+        {
+            // Empty/whitespace line: replace selection with HR
+            string newMd = text.Substring(0, start) + "---" + text.Substring(end);
+            return new TextEditResult
+            {
+                Text = newMd,
+                SelectionStart = start + 3,
+                SelectionEnd = start + 3,
+            };
+        }
     }
 }

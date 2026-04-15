@@ -180,6 +180,24 @@ public static class EditorDocumentParser
                 }
                 EditorDocument.NormalizeSegments(segments);
 
+                // Strip leading whitespace from the first segment.
+                // With EnableTrackTrivia(), Markdig may include the space between
+                // the list marker and the content as part of the paragraph text.
+                if (segments.Count > 0)
+                {
+                    var first = segments[0];
+                    int wsLen = 0;
+                    while (wsLen < first.Text.Length && char.IsWhiteSpace(first.Text[wsLen]))
+                        wsLen++;
+                    if (wsLen > 0)
+                    {
+                        if (wsLen >= first.Text.Length)
+                            segments.RemoveAt(0);
+                        else
+                            first.Text = first.Text.Substring(wsLen);
+                    }
+                }
+
                 var splitBlocks = SplitSegmentsAtNewlines(segments);
                 for (int i = 0; i < splitBlocks.Count; i++)
                 {
